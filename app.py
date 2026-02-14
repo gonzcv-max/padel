@@ -248,7 +248,7 @@ def obtener_estadisticas_globales():
 # ============================================
 
 # Título
-st.title("🎾 Gestión de Partidos de Pádel")
+st.title("🎾 Partidos de Señoras")
 st.markdown("---")
 
 # Sidebar para dar de alta jugadores
