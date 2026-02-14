@@ -39,9 +39,11 @@ with st.sidebar:
                     'nombre': nombre,
                     'nivel': nivel,
                     'partidos': 0,
-                    'puntos': 0,
+                    'puntos_favor': 0,  # Puntos ganados
+                    'puntos_contra': 0,  # Puntos recibidos
                     'victorias': 0,
-                    'derrotas': 0
+                    'derrotas': 0,
+                    'diferencia': 0
                 })
                 st.success(f"✅ {nombre} registrado!")
                 st.rerun()
@@ -58,7 +60,7 @@ with tab1:
         
         # Mostrar jugadores en formato tabla
         for j in st.session_state.jugadores:
-            col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
+            col1, col2, col3, col4, col5, col6 = st.columns([3, 2, 1, 1, 1, 1])
             with col1:
                 st.write(f"**{j['nombre']}**")
             with col2:
@@ -66,9 +68,11 @@ with tab1:
             with col3:
                 st.write(f"🎾 {j['partidos']}")
             with col4:
-                st.write(f"🏆 {j['puntos']}")
+                st.write(f"✅ {j['victorias']}")
             with col5:
-                st.write(f"{j['victorias']}-{j['derrotas']}")
+                st.write(f"❌ {j['derrotas']}")
+            with col6:
+                st.write(f"⚡ {j['puntos_favor']}-{j['puntos_contra']}")
         
         # Eliminar jugador
         with st.expander("Eliminar jugador"):
@@ -143,28 +147,37 @@ with tab2:
                     
                     # Formulario para resultado
                     with st.form(key=f"resultado_{p['id']}"):
-                        st.write("**Resultado:**")
-                        col_a, col_b, col_c = st.columns(3)
+                        st.write("**Ingresa los puntos de cada juego:**")
+                        
+                        col_a, col_b = st.columns(2)
                         with col_a:
-                            sets_pareja1 = st.number_input(f"Sets {p['pareja1']}", min_value=0, max_value=3, value=0, key=f"s1_{p['id']}")
+                            st.write(f"**{p['pareja1']}**")
+                            puntos_pareja1 = st.number_input("Puntos", min_value=0, max_value=50, value=0, key=f"p1_{p['id']}")
                         with col_b:
-                            sets_pareja2 = st.number_input(f"Sets {p['pareja2']}", min_value=0, max_value=3, value=0, key=f"s2_{p['id']}")
-                        with col_c:
-                            if st.form_submit_button("✅ Finalizar"):
-                                if sets_pareja1 != sets_pareja2:
+                            st.write(f"**{p['pareja2']}**")
+                            puntos_pareja2 = st.number_input("Puntos", min_value=0, max_value=50, value=0, key=f"p2_{p['id']}")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col2:
+                            if st.form_submit_button("✅ Finalizar Partido"):
+                                if puntos_pareja1 != puntos_pareja2:
                                     p['activo'] = False
                                     p['resultado'] = {
-                                        'pareja1': sets_pareja1,
-                                        'pareja2': sets_pareja2
+                                        'pareja1': puntos_pareja1,
+                                        'pareja2': puntos_pareja2
                                     }
                                     
                                     # Determinar ganadores y perdedores
-                                    if sets_pareja1 > sets_pareja2:
+                                    if puntos_pareja1 > puntos_pareja2:
                                         ganadores = [p['j1'], p['j2']]
                                         perdedores = [p['j3'], p['j4']]
+                                        puntos_ganadores = puntos_pareja1
+                                        puntos_perdedores = puntos_pareja2
                                     else:
                                         ganadores = [p['j3'], p['j4']]
                                         perdedores = [p['j1'], p['j2']]
+                                        puntos_ganadores = puntos_pareja2
+                                        puntos_perdedores = puntos_pareja1
                                     
                                     # Actualizar estadísticas
                                     for nombre in ganadores:
@@ -172,27 +185,32 @@ with tab2:
                                             if j['nombre'] == nombre:
                                                 j['partidos'] += 1
                                                 j['victorias'] += 1
-                                                j['puntos'] += 3  # 3 puntos por victoria
+                                                j['puntos_favor'] += puntos_ganadores
+                                                j['puntos_contra'] += puntos_perdedores
+                                                j['diferencia'] = j['puntos_favor'] - j['puntos_contra']
                                     
                                     for nombre in perdedores:
                                         for j in st.session_state.jugadores:
                                             if j['nombre'] == nombre:
                                                 j['partidos'] += 1
                                                 j['derrotas'] += 1
-                                                j['puntos'] += 1  # 1 punto por participación
+                                                j['puntos_favor'] += puntos_perdedores
+                                                j['puntos_contra'] += puntos_ganadores
+                                                j['diferencia'] = j['puntos_favor'] - j['puntos_contra']
                                     
                                     # Guardar en historial
                                     st.session_state.historial_partidos.append({
                                         'fecha': p['fecha'],
                                         'pareja1': p['pareja1'],
                                         'pareja2': p['pareja2'],
-                                        'resultado': f"{sets_pareja1} - {sets_pareja2}",
+                                        'resultado': f"{puntos_pareja1} - {puntos_pareja2}",
                                         'ganadores': ' y '.join(ganadores)
                                     })
                                     
+                                    st.success("✅ Partido finalizado!")
                                     st.rerun()
                                 else:
-                                    st.error("El resultado no puede ser empate")
+                                    st.error("❌ Los puntos no pueden ser iguales")
                     st.divider()
         else:
             st.info("No hay partidos activos")
@@ -202,8 +220,22 @@ with tab3:
     if st.session_state.jugadores:
         st.subheader("🏆 Clasificación General")
         
-        # Ordenar por puntos
-        clasificacion = sorted(st.session_state.jugadores, key=lambda x: x['puntos'], reverse=True)
+        # Opciones de ordenamiento
+        orden = st.radio(
+            "Ordenar por:",
+            ["Puntos a favor", "Victorias", "Diferencia", "Partidos jugados"],
+            horizontal=True
+        )
+        
+        # Ordenar según selección
+        if orden == "Puntos a favor":
+            clasificacion = sorted(st.session_state.jugadores, key=lambda x: x['puntos_favor'], reverse=True)
+        elif orden == "Victorias":
+            clasificacion = sorted(st.session_state.jugadores, key=lambda x: x['victorias'], reverse=True)
+        elif orden == "Diferencia":
+            clasificacion = sorted(st.session_state.jugadores, key=lambda x: x['diferencia'], reverse=True)
+        else:  # Partidos jugados
+            clasificacion = sorted(st.session_state.jugadores, key=lambda x: x['partidos'], reverse=True)
         
         # Mostrar tabla de clasificación
         data = []
@@ -212,45 +244,47 @@ with tab3:
                 'Pos': i,
                 'Jugador': j['nombre'],
                 'Nivel': j['nivel'],
-                'Puntos': j['puntos'],
-                'Partidos': j['partidos'],
+                'Puntos Favor': j['puntos_favor'],
+                'Puntos Contra': j['puntos_contra'],
+                'Diferencia': j['diferencia'],
                 'Victorias': j['victorias'],
                 'Derrotas': j['derrotas'],
-                'Promedio': round(j['puntos']/j['partidos'], 2) if j['partidos'] > 0 else 0
+                'Partidos': j['partidos']
             })
         
         df = pd.DataFrame(data)
         st.dataframe(df, use_container_width=True, hide_index=True)
         
-        # Top 3 destacados
+        # Top 3 destacados por puntos
         st.markdown("---")
-        st.subheader("🥇 Podio")
-        col1, col2, col3 = st.columns(3)
+        st.subheader("🥇 Máximos anotadores")
+        top_puntos = sorted(st.session_state.jugadores, key=lambda x: x['puntos_favor'], reverse=True)[:3]
         
-        if len(clasificacion) >= 1:
+        col1, col2, col3 = st.columns(3)
+        if len(top_puntos) >= 1:
             with col1:
-                st.metric("🥇 1º", clasificacion[0]['nombre'], f"{clasificacion[0]['puntos']} pts")
-        if len(clasificacion) >= 2:
+                st.metric("🥇 1º", top_puntos[0]['nombre'], f"{top_puntos[0]['puntos_favor']} pts")
+        if len(top_puntos) >= 2:
             with col2:
-                st.metric("🥈 2º", clasificacion[1]['nombre'], f"{clasificacion[1]['puntos']} pts")
-        if len(clasificacion) >= 3:
+                st.metric("🥈 2º", top_puntos[1]['nombre'], f"{top_puntos[1]['puntos_favor']} pts")
+        if len(top_puntos) >= 3:
             with col3:
-                st.metric("🥉 3º", clasificacion[2]['nombre'], f"{clasificacion[2]['puntos']} pts")
+                st.metric("🥉 3º", top_puntos[2]['nombre'], f"{top_puntos[2]['puntos_favor']} pts")
         
         # Gráfico de puntos
         st.markdown("---")
-        st.subheader("📊 Puntos por jugador")
+        st.subheader("📊 Puntos a favor por jugador")
         
-        # Crear gráfico de barras simple con texto
+        # Crear gráfico de barras simple
         for j in clasificacion[:10]:  # Top 10
-            barra = "█" * (j['puntos'] // 2)  # Escala para que no sea muy larga
-            st.write(f"{j['nombre']}: {barra} ({j['puntos']} pts)")
+            barra = "█" * (j['puntos_favor'] // 3)  # Escala para que no sea muy larga
+            st.write(f"{j['nombre']}: {barra} ({j['puntos_favor']} pts)")
         
-        # Mejor promedio
+        # Mejor diferencia
         st.markdown("---")
-        st.subheader("⭐ Mejor promedio (puntos/partido)")
-        mejor_promedio = sorted(st.session_state.jugadores, key=lambda x: x['puntos']/x['partidos'] if x['partidos']>0 else 0, reverse=True)[0]
-        st.write(f"**{mejor_promedio['nombre']}** - {round(mejor_promedio['puntos']/mejor_promedio['partidos'], 2)} pts/partido")
+        st.subheader("⭐ Mejor diferencia de puntos")
+        mejor_diferencia = sorted(st.session_state.jugadores, key=lambda x: x['diferencia'], reverse=True)[0]
+        st.write(f"**{mejor_diferencia['nombre']}** - Diferencia: +{mejor_diferencia['diferencia']}")
         
     else:
         st.info("No hay datos para mostrar")
@@ -261,7 +295,7 @@ with tab4:
     
     if st.session_state.historial_partidos:
         # Mostrar historial en orden inverso (más reciente primero)
-        for partido in reversed(st.session_state.historial_partidos[-20:]):  # Últimos 20
+        for partido in reversed(st.session_state.historial_partidos[-30:]):  # Últimos 30
             with st.container():
                 col1, col2, col3 = st.columns([2, 3, 2])
                 with col1:
@@ -280,11 +314,11 @@ with tab4:
         with col1:
             st.metric("Total Partidos", len(st.session_state.historial_partidos))
         with col2:
-            total_puntos = sum(j['puntos'] for j in st.session_state.jugadores)
+            total_puntos = sum(j['puntos_favor'] for j in st.session_state.jugadores)
             st.metric("Total Puntos", total_puntos)
         with col3:
             if st.session_state.jugadores:
-                max_puntos = max(j['puntos'] for j in st.session_state.jugadores)
+                max_puntos = max(j['puntos_favor'] for j in st.session_state.jugadores)
                 st.metric("Máximo Puntos", max_puntos)
     else:
         st.info("No hay partidos finalizados aún")
