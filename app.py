@@ -257,7 +257,7 @@ with st.sidebar:
     
     with st.form("alta_jugador", clear_on_submit=True):
         nombre = st.text_input("Nombre")
-        nivel = st.selectbox("Nivel", ["Principiante", "Intermedio", "Avanzado"])
+        nivel = st.selectbox("Nivel", ["Panda", "Manco", "Muy Muy"])
         
         if st.form_submit_button("Registrar"):
             if nombre:
@@ -346,7 +346,7 @@ with tab2:
                     del st.session_state.seleccion
                 st.rerun()
         else:
-            st.warning(f"Necesitas 4 jugadores (tienes {len(jugadores)})")
+            st.warning(f"Necesitas 4 jugadores (tienes {len(jugadores)}) ")
     
     with col2:
         st.subheader("Partidos Activos")
