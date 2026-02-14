@@ -346,7 +346,7 @@ with tab2:
                     del st.session_state.seleccion
                 st.rerun()
         else:
-            st.warning(f"Necesitas 4 jugadores (tienes {len(jugadores)}) ")
+            st.warning(f"Necesitas 4 jugadores (tienes {len(jugadores)}) ponte pilas!!!")
     
     with col2:
         st.subheader("Partidos Activos")
@@ -402,7 +402,7 @@ with tab2:
                                     st.success("✅ Partido finalizado!")
                                     st.rerun()
                                 else:
-                                    st.error("❌ Los puntos no pueden ser iguales")
+                                    st.error("❌ Los puntos no pueden ser iguales. Somos Spartans")
                     st.divider()
         else:
             st.info("No hay partidos activos")
