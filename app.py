@@ -142,6 +142,20 @@ def crear_partido(j1, j2, j3, j4, pareja1, pareja2):
     conn.close()
     return partido_id
 
+def cargar_partido(partido_id):
+    """Carga un partido específico por ID"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+               puntos_pareja1, puntos_pareja2, ganadores, resultado
+        FROM partidos 
+        WHERE id = ?
+    ''', (partido_id,))
+    partido = cursor.fetchone()
+    conn.close()
+    return dict(partido) if partido else None
+
 def cargar_partidos_activos():
     """Carga todos los partidos activos"""
     conn = get_db_connection()
@@ -155,6 +169,18 @@ def cargar_partidos_activos():
     partidos = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return partidos
+
+def actualizar_partido(partido_id, j1, j2, j3, j4, pareja1, pareja2):
+    """Actualiza un partido existente"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE partidos 
+        SET j1 = ?, j2 = ?, j3 = ?, j4 = ?, pareja1 = ?, pareja2 = ?
+        WHERE id = ?
+    ''', (j1, j2, j3, j4, pareja1, pareja2, partido_id))
+    conn.commit()
+    conn.close()
 
 def finalizar_partido(partido_id, puntos_pareja1, puntos_pareja2, ganadores):
     """Finaliza un partido y actualiza estadísticas"""
@@ -271,7 +297,7 @@ with st.sidebar:
     st.caption("💾 Los datos se guardan automáticamente en la base de datos")
 
 # Pestañas
-tab1, tab2, tab3, tab4 = st.tabs(["👥 Jugadores", "🎯 Partidos", "📊 Clasificación", "📜 Historial"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["👥 Jugadores", "🎯 Partidos", "📊 Clasificación", "📜 Historial", "✏️ Editar Partido"])
 
 # TAB 1: Lista de jugadores
 with tab1:
@@ -322,25 +348,26 @@ with tab2:
                 st.session_state.seleccion = [j['nombre'] for j in menos_jugados]
                 st.rerun()
             
-            # Selección manual
-            st.write("Selecciona 4 jugadores:")
-            seleccion = []
-            for i in range(4):
-                opciones = [n for n in nombres if n not in seleccion]
-                if opciones:
-                    default = None
-                    if 'seleccion' in st.session_state and i < len(st.session_state.seleccion):
-                        default = st.session_state.seleccion[i] if st.session_state.seleccion[i] in opciones else opciones[0]
-                    jugador = st.selectbox(f"Jugador {i+1}", opciones, key=f"j{i}", index=opciones.index(default) if default in opciones else 0)
-                    seleccion.append(jugador)
+            # Selección por parejas
+            st.write("**Formar parejas:**")
+            
+            col_p1, col_p2 = st.columns(2)
+            
+            with col_p1:
+                st.markdown("**Pareja 1**")
+                jugador1_p1 = st.selectbox("Jugador 1", nombres, key="p1_j1")
+                jugador2_p1 = st.selectbox("Jugador 2", [n for n in nombres if n != jugador1_p1], key="p1_j2")
+            
+            with col_p2:
+                st.markdown("**Pareja 2**")
+                jugador1_p2 = st.selectbox("Jugador 3", [n for n in nombres if n not in [jugador1_p1, jugador2_p1]], key="p2_j1")
+                jugador2_p2 = st.selectbox("Jugador 4", [n for n in nombres if n not in [jugador1_p1, jugador2_p1, jugador1_p2]], key="p2_j2")
             
             if st.button("Crear Partido", type="primary"):
-                # Mezclar para formar parejas
-                random.shuffle(seleccion)
-                pareja1 = f"{seleccion[0]} y {seleccion[1]}"
-                pareja2 = f"{seleccion[2]} y {seleccion[3]}"
+                pareja1 = f"{jugador1_p1} y {jugador2_p1}"
+                pareja2 = f"{jugador1_p2} y {jugador2_p2}"
                 
-                crear_partido(seleccion[0], seleccion[1], seleccion[2], seleccion[3], pareja1, pareja2)
+                crear_partido(jugador1_p1, jugador2_p1, jugador1_p2, jugador2_p2, pareja1, pareja2)
                 
                 if 'seleccion' in st.session_state:
                     del st.session_state.seleccion
@@ -508,3 +535,123 @@ with tab4:
             st.metric("Máximo Puntos", max_puntos)
     else:
         st.info("No hay partidos finalizados aún")
+
+# TAB 5: Editar Partido
+with tab5:
+    st.subheader("✏️ Editar Partido")
+    
+    # Cargar partidos activos para editar
+    partidos_activos = cargar_partidos_activos()
+    
+    if partidos_activos:
+        # Selector de partido
+        opciones_partido = [f"Partido #{p['id']} - {p['pareja1']} vs {p['pareja2']}" for p in partidos_activos]
+        partido_seleccionado = st.selectbox("Selecciona el partido a editar", opciones_partido)
+        
+        # Obtener ID del partido seleccionado
+        partido_id = int(partido_seleccionado.split('#')[1].split(' ')[0])
+        partido = cargar_partido(partido_id)
+        
+        if partido:
+            st.markdown("---")
+            st.write("**Editar jugadores del partido:**")
+            
+            jugadores = cargar_jugadores()
+            nombres = [j['nombre'] for j in jugadores]
+            
+            # Verificar que todos los jugadores del partido existen
+            jugadores_partido = [partido['j1'], partido['j2'], partido['j3'], partido['j4']]
+            jugadores_faltantes = [j for j in jugadores_partido if j not in nombres]
+            
+            if jugadores_faltantes:
+                st.warning(f"⚠️ Los siguientes jugadores ya no existen en la base de datos: {', '.join(jugadores_faltantes)}")
+                st.info("Deberás reemplazarlos por jugadores activos.")
+            
+            # Formulario de edición con selección por parejas
+            col_edit1, col_edit2 = st.columns(2)
+            
+            with col_edit1:
+                st.markdown("**Pareja 1 (actualizar)**")
+                # Jugador 1 de pareja 1
+                default_j1 = partido['j1'] if partido['j1'] in nombres else (nombres[0] if nombres else "")
+                jugador1_p1_edit = st.selectbox(
+                    "Jugador 1", 
+                    nombres, 
+                    index=nombres.index(default_j1) if default_j1 in nombres else 0,
+                    key="edit_p1_j1"
+                )
+                
+                # Jugador 2 de pareja 1
+                opciones_j2 = [n for n in nombres if n != jugador1_p1_edit]
+                default_j2 = partido['j2'] if partido['j2'] in opciones_j2 else (opciones_j2[0] if opciones_j2 else "")
+                jugador2_p1_edit = st.selectbox(
+                    "Jugador 2", 
+                    opciones_j2,
+                    index=opciones_j2.index(default_j2) if default_j2 in opciones_j2 else 0,
+                    key="edit_p1_j2"
+                )
+            
+            with col_edit2:
+                st.markdown("**Pareja 2 (actualizar)**")
+                jugadores_usados = [jugador1_p1_edit, jugador2_p1_edit]
+                opciones_p2 = [n for n in nombres if n not in jugadores_usados]
+                
+                # Jugador 1 de pareja 2
+                default_j3 = partido['j3'] if partido['j3'] in opciones_p2 else (opciones_p2[0] if opciones_p2 else "")
+                jugador1_p2_edit = st.selectbox(
+                    "Jugador 3", 
+                    opciones_p2,
+                    index=opciones_p2.index(default_j3) if default_j3 in opciones_p2 else 0,
+                    key="edit_p2_j1"
+                )
+                
+                # Jugador 2 de pareja 2
+                opciones_j4 = [n for n in opciones_p2 if n != jugador1_p2_edit]
+                default_j4 = partido['j4'] if partido['j4'] in opciones_j4 else (opciones_j4[0] if opciones_j4 else "")
+                jugador2_p2_edit = st.selectbox(
+                    "Jugador 4", 
+                    opciones_j4,
+                    index=opciones_j4.index(default_j4) if default_j4 in opciones_j4 else 0,
+                    key="edit_p2_j2"
+                )
+            
+            # Botón para guardar cambios
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            with col_btn2:
+                if st.button("💾 Guardar Cambios", type="primary", use_container_width=True):
+                    # Verificar que hay 4 jugadores distintos
+                    jugadores_seleccionados = {jugador1_p1_edit, jugador2_p1_edit, jugador1_p2_edit, jugador2_p2_edit}
+                    
+                    if len(jugadores_seleccionados) == 4:
+                        # Crear nombres de parejas
+                        pareja1_nueva = f"{jugador1_p1_edit} y {jugador2_p1_edit}"
+                        pareja2_nueva = f"{jugador1_p2_edit} y {jugador2_p2_edit}"
+                        
+                        # Actualizar partido
+                        actualizar_partido(
+                            partido_id, 
+                            jugador1_p1_edit, 
+                            jugador2_p1_edit, 
+                            jugador1_p2_edit, 
+                            jugador2_p2_edit,
+                            pareja1_nueva,
+                            pareja2_nueva
+                        )
+                        
+                        st.success("✅ Partido actualizado correctamente!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Todos los jugadores deben ser diferentes")
+            
+            # Mostrar información del partido
+            with st.expander("Ver información completa del partido"):
+                st.json({
+                    "ID": partido['id'],
+                    "Fecha": partido['fecha'],
+                    "Pareja 1 original": partido['pareja1'],
+                    "Pareja 2 original": partido['pareja2'],
+                    "Estado": "Activo" if partido['activo'] else "Finalizado"
+                })
+    
+    else:
+        st.info("No hay partidos activos para editar")
