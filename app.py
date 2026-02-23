@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime
 import json
 import os
+import re
 
 # Configuración de la página
 st.set_page_config(
@@ -26,6 +27,9 @@ def init_database():
     """Inicializa la base de datos creando las tablas si no existen"""
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # Habilitar foreign keys
+    cursor.execute("PRAGMA foreign_keys = ON")
     
     # Tabla de jugadores
     cursor.execute('''
@@ -59,10 +63,10 @@ def init_database():
             puntos_pareja2 INTEGER,
             ganadores TEXT,
             resultado TEXT,
-            FOREIGN KEY (j1) REFERENCES jugadores(nombre),
-            FOREIGN KEY (j2) REFERENCES jugadores(nombre),
-            FOREIGN KEY (j3) REFERENCES jugadores(nombre),
-            FOREIGN KEY (j4) REFERENCES jugadores(nombre)
+            FOREIGN KEY (j1) REFERENCES jugadores(nombre) ON DELETE CASCADE,
+            FOREIGN KEY (j2) REFERENCES jugadores(nombre) ON DELETE CASCADE,
+            FOREIGN KEY (j3) REFERENCES jugadores(nombre) ON DELETE CASCADE,
+            FOREIGN KEY (j4) REFERENCES jugadores(nombre) ON DELETE CASCADE
         )
     ''')
     
@@ -122,7 +126,7 @@ def guardar_jugador(nombre, nivel):
         conn.close()
 
 def eliminar_jugador(nombre):
-    """Elimina un jugador de la BD"""
+    """Elimina un jugador de la BD (los partidos relacionados se borran por CASCADE)"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM jugadores WHERE nombre = ?", (nombre,))
@@ -203,6 +207,27 @@ def eliminar_partido(partido_id):
     
     # Eliminar el partido (el historial se elimina automáticamente por CASCADE)
     cursor.execute("DELETE FROM partidos WHERE id = ?", (partido_id,))
+    
+    conn.commit()
+    conn.close()
+
+def eliminar_historial_completo():
+    """Elimina todo el historial de partidos (solo historial, no los partidos)"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Eliminar todos los registros de historial
+    cursor.execute("DELETE FROM historial")
+    
+    conn.commit()
+    conn.close()
+
+def eliminar_historial_por_partido(partido_id):
+    """Elimina el historial de un partido específico"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("DELETE FROM historial WHERE partido_id = ?", (partido_id,))
     
     conn.commit()
     conn.close()
@@ -322,7 +347,7 @@ with st.sidebar:
     st.caption("💾 Los datos se guardan automáticamente en la base de datos")
 
 # Pestañas
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["👥 Jugadores", "🎯 Partidos", "📊 Clasificación", "📜 Historial", "✏️ Editar Partido", "🗑️ Borrar Partido"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["👥 Jugadores", "🎯 Partidos", "📊 Clasificación", "📜 Historial", "✏️ Editar Partido", "🗑️ Borrar Partido/Historial"])
 
 # TAB 1: Lista de jugadores
 with tab1:
@@ -349,9 +374,11 @@ with tab1:
         
         # Eliminar jugador
         with st.expander("Eliminar jugador"):
+            st.warning("⚠️ Al eliminar un jugador, también se borrarán todos sus partidos e historial")
             nombre = st.selectbox("Seleccionar", [j['nombre'] for j in jugadores])
-            if st.button("Eliminar"):
+            if st.button("Eliminar Jugador"):
                 eliminar_jugador(nombre)
+                st.success(f"✅ Jugador {nombre} eliminado")
                 st.rerun()
     else:
         st.info("No hay jugadores. Agrega desde el menú lateral.")
@@ -367,7 +394,7 @@ with tab2:
         if len(jugadores) >= 4:
             nombres = [j['nombre'] for j in jugadores]
             
-            # Selección rápida de los que menos jugaron - CORREGIDO
+            # Selección rápida de los que menos jugaron
             if st.button("🎲 Seleccionar los que menos jugaron"):
                 # Ordenar por partidos jugados (menor a mayor)
                 menos_jugados = sorted(jugadores, key=lambda x: x['partidos'])
@@ -422,6 +449,7 @@ with tab2:
                 # Limpiar selección rápida después de crear
                 if 'seleccion_rapida' in st.session_state:
                     del st.session_state.seleccion_rapida
+                st.success("✅ Partido creado correctamente!")
                 st.rerun()
         else:
             st.warning(f"Necesitas 4 jugadores (tienes {len(jugadores)}) ponte pilas!!!")
@@ -556,9 +584,24 @@ with tab3:
 with tab4:
     st.subheader("📜 Historial de Partidos")
     
-    historial = cargar_historial()
+    historial = cargar_historial(100)  # Aumentamos el límite
     
     if historial:
+        # Botón para limpiar todo el historial
+        col_h1, col_h2, col_h3 = st.columns(3)
+        with col_h2:
+            with st.expander("⚠️ Limpiar todo el historial"):
+                st.warning("Esta acción eliminará TODO el historial de partidos")
+                st.warning("Los partidos seguirán existiendo, solo se borra el registro histórico")
+                confirmar_historial = st.checkbox("Entiendo que esto no se puede deshacer")
+                if confirmar_historial:
+                    if st.button("🗑️ LIMPIAR HISTORIAL COMPLETO", type="primary"):
+                        eliminar_historial_completo()
+                        st.success("✅ Historial limpiado correctamente!")
+                        st.rerun()
+        
+        st.markdown("---")
+        
         for partido in historial:
             with st.container():
                 col1, col2, col3 = st.columns([2, 3, 2])
@@ -707,61 +750,134 @@ with tab5:
     else:
         st.info("No hay partidos activos para editar")
 
-# TAB 6: Borrar Partido
+# TAB 6: Borrar Partido/Historial
 with tab6:
-    st.subheader("🗑️ Borrar Partido")
-    st.warning("⚠️ Esta acción eliminará permanentemente el partido y su historial")
+    st.subheader("🗑️ Borrar Partido o Historial")
     
-    # Cargar todos los partidos (activos y finalizados)
-    todos_partidos = cargar_todos_partidos()
+    # Opciones de borrado
+    opcion_borrado = st.radio(
+        "¿Qué quieres borrar?",
+        ["Partido específico", "Historial completo", "Borrar todo (partidos e historial)"],
+        horizontal=True
+    )
     
-    if todos_partidos:
-        # Selector de partido
-        opciones_partido = []
-        for p in todos_partidos:
-            estado = "🟢 Activo" if p['activo'] else "🔴 Finalizado"
-            resultado = f" - {p['resultado']}" if p['resultado'] else ""
-            opciones_partido.append(f"{estado} - Partido #{p['id']}: {p['pareja1']} vs {p['pareja2']}{resultado}")
+    if opcion_borrado == "Partido específico":
+        st.warning("⚠️ Esta acción eliminará permanentemente el partido y su historial asociado")
         
-        partido_seleccionado = st.selectbox("Selecciona el partido a borrar", opciones_partido)
+        # Cargar todos los partidos (activos y finalizados)
+        todos_partidos = cargar_todos_partidos()
         
-        # Obtener ID del partido seleccionado
-        import re
-        match = re.search(r'#(\d+):', partido_seleccionado)
-        if match:
-            partido_id = int(match.group(1))
-            partido = cargar_partido(partido_id)
+        if todos_partidos:
+            # Selector de partido
+            opciones_partido = []
+            for p in todos_partidos:
+                estado = "🟢 Activo" if p['activo'] else "🔴 Finalizado"
+                resultado = f" - {p['resultado']}" if p['resultado'] else ""
+                opciones_partido.append(f"{estado} - Partido #{p['id']}: {p['pareja1']} vs {p['pareja2']}{resultado}")
             
-            if partido:
-                # Mostrar información del partido
-                st.markdown("---")
-                st.write("**Detalles del partido a borrar:**")
+            partido_seleccionado = st.selectbox("Selecciona el partido a borrar", opciones_partido)
+            
+            # Obtener ID del partido seleccionado
+            match = re.search(r'#(\d+):', partido_seleccionado)
+            if match:
+                partido_id = int(match.group(1))
+                partido = cargar_partido(partido_id)
                 
-                col_info1, col_info2 = st.columns(2)
-                with col_info1:
-                    st.write(f"📅 Fecha: {partido['fecha']}")
-                    st.write(f"🏸 Pareja 1: {partido['pareja1']}")
-                    st.write(f"🏸 Pareja 2: {partido['pareja2']}")
-                
-                with col_info2:
-                    if partido['resultado']:
-                        st.write(f"📊 Resultado: {partido['resultado']}")
-                        st.write(f"🏆 Ganadores: {partido['ganadores']}")
-                    st.write(f"📌 Estado: {'Activo' if partido['activo'] else 'Finalizado'}")
-                
-                st.markdown("---")
-                
-                # Confirmación de borrado
-                col_confirm1, col_confirm2, col_confirm3 = st.columns(3)
-                with col_confirm2:
-                    # Checkbox de confirmación
-                    confirmar = st.checkbox("Entiendo que esta acción no se puede deshacer")
+                if partido:
+                    # Mostrar información del partido
+                    st.markdown("---")
+                    st.write("**Detalles del partido a borrar:**")
                     
-                    if confirmar:
-                        if st.button("🗑️ BORRAR PARTIDO PERMANENTEMENTE", type="primary", use_container_width=True):
-                            eliminar_partido(partido_id)
-                            st.success(f"✅ Partido #{partido_id} eliminado correctamente!")
-                            st.rerun()
+                    col_info1, col_info2 = st.columns(2)
+                    with col_info1:
+                        st.write(f"📅 Fecha: {partido['fecha']}")
+                        st.write(f"🏸 Pareja 1: {partido['pareja1']}")
+                        st.write(f"🏸 Pareja 2: {partido['pareja2']}")
+                    
+                    with col_info2:
+                        if partido['resultado']:
+                            st.write(f"📊 Resultado: {partido['resultado']}")
+                            st.write(f"🏆 Ganadores: {partido['ganadores']}")
+                        st.write(f"📌 Estado: {'Activo' if partido['activo'] else 'Finalizado'}")
+                    
+                    st.markdown("---")
+                    
+                    # Confirmación de borrado
+                    col_confirm1, col_confirm2, col_confirm3 = st.columns(3)
+                    with col_confirm2:
+                        # Checkbox de confirmación
+                        confirmar = st.checkbox("Entiendo que esta acción no se puede deshacer")
+                        
+                        if confirmar:
+                            if st.button("🗑️ BORRAR PARTIDO", type="primary", use_container_width=True):
+                                eliminar_partido(partido_id)
+                                st.success(f"✅ Partido #{partido_id} eliminado correctamente!")
+                                st.rerun()
+        else:
+            st.info("No hay partidos registrados")
     
-    else:
-        st.info("No hay partidos registrados")
+    elif opcion_borrado == "Historial completo":
+        st.warning("⚠️ Esta acción eliminará TODO el historial de partidos")
+        st.info("Los partidos seguirán existiendo, solo se borra el registro histórico")
+        
+        historial = cargar_historial(1)  # Solo para ver si hay algo
+        
+        if historial:
+            # Mostrar cantidad de registros
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as total FROM historial")
+            total_historial = cursor.fetchone()['total']
+            conn.close()
+            
+            st.write(f"**Registros en historial: {total_historial}**")
+            
+            # Confirmación
+            col_h1, col_h2, col_h3 = st.columns(3)
+            with col_h2:
+                confirmar_historial = st.checkbox("Confirmo que quiero borrar TODO el historial")
+                
+                if confirmar_historial:
+                    if st.button("🗑️ LIMPIAR HISTORIAL COMPLETO", type="primary", use_container_width=True):
+                        eliminar_historial_completo()
+                        st.success("✅ Historial limpiado correctamente!")
+                        st.rerun()
+        else:
+            st.info("No hay historial para borrar")
+    
+    else:  # Borrar todo
+        st.error("⚠️⚠️⚠️ ATENCIÓN: Esta acción eliminará TODOS los partidos y TODO el historial ⚠️⚠️⚠️")
+        st.warning("La base de datos quedará vacía")
+        
+        todos_partidos = cargar_todos_partidos()
+        
+        if todos_partidos:
+            st.write(f"**Partidos a eliminar: {len(todos_partidos)}**")
+            
+            # Mostrar lista de partidos que se borrarán
+            with st.expander("Ver partidos que serán eliminados"):
+                for p in todos_partidos[:10]:  # Mostrar solo los primeros 10
+                    estado = "Activo" if p['activo'] else "Finalizado"
+                    st.write(f"- #{p['id']}: {p['pareja1']} vs {p['pareja2']} ({estado})")
+                if len(todos_partidos) > 10:
+                    st.write(f"... y {len(todos_partidos) - 10} más")
+            
+            # Doble confirmación
+            col_t1, col_t2, col_t3 = st.columns(3)
+            with col_t2:
+                confirmar1 = st.checkbox("Entiendo que esto borrará TODOS los partidos")
+                confirmar2 = st.checkbox("Entiendo que NO se puede recuperar")
+                
+                if confirmar1 and confirmar2:
+                    if st.button("💀 BORRAR TODO", type="primary", use_container_width=True):
+                        # Borrar todos los partidos (el historial se borra por CASCADE)
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM partidos")
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success("✅ Todo ha sido eliminado correctamente!")
+                        st.rerun()
+        else:
+            st.info("No hay partidos para borrar")
