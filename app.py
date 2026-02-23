@@ -76,7 +76,7 @@ def init_database():
             pareja2 TEXT,
             resultado TEXT,
             ganadores TEXT,
-            FOREIGN KEY (partido_id) REFERENCES partidos(id)
+            FOREIGN KEY (partido_id) REFERENCES partidos(id) ON DELETE CASCADE
         )
     ''')
     
@@ -170,6 +170,20 @@ def cargar_partidos_activos():
     conn.close()
     return partidos
 
+def cargar_todos_partidos():
+    """Carga todos los partidos (activos y finalizados)"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+               puntos_pareja1, puntos_pareja2, ganadores, resultado
+        FROM partidos 
+        ORDER BY fecha DESC
+    ''')
+    partidos = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return partidos
+
 def actualizar_partido(partido_id, j1, j2, j3, j4, pareja1, pareja2):
     """Actualiza un partido existente"""
     conn = get_db_connection()
@@ -179,6 +193,17 @@ def actualizar_partido(partido_id, j1, j2, j3, j4, pareja1, pareja2):
         SET j1 = ?, j2 = ?, j3 = ?, j4 = ?, pareja1 = ?, pareja2 = ?
         WHERE id = ?
     ''', (j1, j2, j3, j4, pareja1, pareja2, partido_id))
+    conn.commit()
+    conn.close()
+
+def eliminar_partido(partido_id):
+    """Elimina un partido y su historial (por CASCADE)"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Eliminar el partido (el historial se elimina automáticamente por CASCADE)
+    cursor.execute("DELETE FROM partidos WHERE id = ?", (partido_id,))
+    
     conn.commit()
     conn.close()
 
@@ -297,7 +322,7 @@ with st.sidebar:
     st.caption("💾 Los datos se guardan automáticamente en la base de datos")
 
 # Pestañas
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["👥 Jugadores", "🎯 Partidos", "📊 Clasificación", "📜 Historial", "✏️ Editar Partido"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["👥 Jugadores", "🎯 Partidos", "📊 Clasificación", "📜 Historial", "✏️ Editar Partido", "🗑️ Borrar Partido"])
 
 # TAB 1: Lista de jugadores
 with tab1:
@@ -342,10 +367,16 @@ with tab2:
         if len(jugadores) >= 4:
             nombres = [j['nombre'] for j in jugadores]
             
-            # Selección rápida de los que menos jugaron
+            # Selección rápida de los que menos jugaron - CORREGIDO
             if st.button("🎲 Seleccionar los que menos jugaron"):
-                menos_jugados = sorted(jugadores, key=lambda x: x['partidos'])[:4]
-                st.session_state.seleccion = [j['nombre'] for j in menos_jugados]
+                # Ordenar por partidos jugados (menor a mayor)
+                menos_jugados = sorted(jugadores, key=lambda x: x['partidos'])
+                
+                # Tomar los 4 primeros (los que menos jugaron)
+                seleccionados = [j['nombre'] for j in menos_jugados[:4]]
+                
+                # Guardar en session_state para mantener la selección
+                st.session_state.seleccion_rapida = seleccionados
                 st.rerun()
             
             # Selección por parejas
@@ -353,15 +384,34 @@ with tab2:
             
             col_p1, col_p2 = st.columns(2)
             
+            # Obtener valores por defecto si existe selección rápida
+            seleccion_defecto = st.session_state.get('seleccion_rapida', [])
+            
             with col_p1:
                 st.markdown("**Pareja 1**")
-                jugador1_p1 = st.selectbox("Jugador 1", nombres, key="p1_j1")
-                jugador2_p1 = st.selectbox("Jugador 2", [n for n in nombres if n != jugador1_p1], key="p1_j2")
+                
+                # Jugador 1 de pareja 1
+                default_p1_j1 = seleccion_defecto[0] if len(seleccion_defecto) > 0 and seleccion_defecto[0] in nombres else nombres[0]
+                jugador1_p1 = st.selectbox("Jugador 1", nombres, index=nombres.index(default_p1_j1), key="p1_j1")
+                
+                # Jugador 2 de pareja 1
+                opciones_j2 = [n for n in nombres if n != jugador1_p1]
+                default_p1_j2 = seleccion_defecto[1] if len(seleccion_defecto) > 1 and seleccion_defecto[1] in opciones_j2 else opciones_j2[0]
+                jugador2_p1 = st.selectbox("Jugador 2", opciones_j2, index=opciones_j2.index(default_p1_j2) if default_p1_j2 in opciones_j2 else 0, key="p1_j2")
             
             with col_p2:
                 st.markdown("**Pareja 2**")
-                jugador1_p2 = st.selectbox("Jugador 3", [n for n in nombres if n not in [jugador1_p1, jugador2_p1]], key="p2_j1")
-                jugador2_p2 = st.selectbox("Jugador 4", [n for n in nombres if n not in [jugador1_p1, jugador2_p1, jugador1_p2]], key="p2_j2")
+                jugadores_usados = [jugador1_p1, jugador2_p1]
+                opciones_p2 = [n for n in nombres if n not in jugadores_usados]
+                
+                # Jugador 1 de pareja 2
+                default_p2_j1 = seleccion_defecto[2] if len(seleccion_defecto) > 2 and seleccion_defecto[2] in opciones_p2 else opciones_p2[0]
+                jugador1_p2 = st.selectbox("Jugador 3", opciones_p2, index=opciones_p2.index(default_p2_j1) if default_p2_j1 in opciones_p2 else 0, key="p2_j1")
+                
+                # Jugador 2 de pareja 2
+                opciones_j4 = [n for n in opciones_p2 if n != jugador1_p2]
+                default_p2_j2 = seleccion_defecto[3] if len(seleccion_defecto) > 3 and seleccion_defecto[3] in opciones_j4 else opciones_j4[0]
+                jugador2_p2 = st.selectbox("Jugador 4", opciones_j4, index=opciones_j4.index(default_p2_j2) if default_p2_j2 in opciones_j4 else 0, key="p2_j2")
             
             if st.button("Crear Partido", type="primary"):
                 pareja1 = f"{jugador1_p1} y {jugador2_p1}"
@@ -369,8 +419,9 @@ with tab2:
                 
                 crear_partido(jugador1_p1, jugador2_p1, jugador1_p2, jugador2_p2, pareja1, pareja2)
                 
-                if 'seleccion' in st.session_state:
-                    del st.session_state.seleccion
+                # Limpiar selección rápida después de crear
+                if 'seleccion_rapida' in st.session_state:
+                    del st.session_state.seleccion_rapida
                 st.rerun()
         else:
             st.warning(f"Necesitas 4 jugadores (tienes {len(jugadores)}) ponte pilas!!!")
@@ -655,3 +706,62 @@ with tab5:
     
     else:
         st.info("No hay partidos activos para editar")
+
+# TAB 6: Borrar Partido
+with tab6:
+    st.subheader("🗑️ Borrar Partido")
+    st.warning("⚠️ Esta acción eliminará permanentemente el partido y su historial")
+    
+    # Cargar todos los partidos (activos y finalizados)
+    todos_partidos = cargar_todos_partidos()
+    
+    if todos_partidos:
+        # Selector de partido
+        opciones_partido = []
+        for p in todos_partidos:
+            estado = "🟢 Activo" if p['activo'] else "🔴 Finalizado"
+            resultado = f" - {p['resultado']}" if p['resultado'] else ""
+            opciones_partido.append(f"{estado} - Partido #{p['id']}: {p['pareja1']} vs {p['pareja2']}{resultado}")
+        
+        partido_seleccionado = st.selectbox("Selecciona el partido a borrar", opciones_partido)
+        
+        # Obtener ID del partido seleccionado
+        import re
+        match = re.search(r'#(\d+):', partido_seleccionado)
+        if match:
+            partido_id = int(match.group(1))
+            partido = cargar_partido(partido_id)
+            
+            if partido:
+                # Mostrar información del partido
+                st.markdown("---")
+                st.write("**Detalles del partido a borrar:**")
+                
+                col_info1, col_info2 = st.columns(2)
+                with col_info1:
+                    st.write(f"📅 Fecha: {partido['fecha']}")
+                    st.write(f"🏸 Pareja 1: {partido['pareja1']}")
+                    st.write(f"🏸 Pareja 2: {partido['pareja2']}")
+                
+                with col_info2:
+                    if partido['resultado']:
+                        st.write(f"📊 Resultado: {partido['resultado']}")
+                        st.write(f"🏆 Ganadores: {partido['ganadores']}")
+                    st.write(f"📌 Estado: {'Activo' if partido['activo'] else 'Finalizado'}")
+                
+                st.markdown("---")
+                
+                # Confirmación de borrado
+                col_confirm1, col_confirm2, col_confirm3 = st.columns(3)
+                with col_confirm2:
+                    # Checkbox de confirmación
+                    confirmar = st.checkbox("Entiendo que esta acción no se puede deshacer")
+                    
+                    if confirmar:
+                        if st.button("🗑️ BORRAR PARTIDO PERMANENTEMENTE", type="primary", use_container_width=True):
+                            eliminar_partido(partido_id)
+                            st.success(f"✅ Partido #{partido_id} eliminado correctamente!")
+                            st.rerun()
+    
+    else:
+        st.info("No hay partidos registrados")
