@@ -1,4 +1,3 @@
-# Agregar después de las importaciones existentes
 import streamlit as st
 import pandas as pd
 import random
@@ -8,21 +7,470 @@ import json
 import os
 import re
 
-# ... (todas las funciones anteriores se mantienen igual hasta la función paginador)
+# Configuración de la página
+st.set_page_config(
+    page_title="Gestión de Pádel",
+    page_icon="🎾",
+    layout="wide"
+)
+
+# ============================================
+# CONEXIÓN A BASE DE DATOS
+# ============================================
+def get_db_connection():
+    """Obtiene una conexión a la base de datos SQLite"""
+    conn = sqlite3.connect('padel.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_database():
+    """Inicializa la base de datos creando las tablas si no existen"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Habilitar foreign keys
+        cursor.execute("PRAGMA foreign_keys = ON")
+        
+        # Tabla de jugadores
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS jugadores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre TEXT UNIQUE NOT NULL,
+                nivel TEXT NOT NULL,
+                partidos INTEGER DEFAULT 0,
+                puntos_favor INTEGER DEFAULT 0,
+                puntos_contra INTEGER DEFAULT 0,
+                victorias INTEGER DEFAULT 0,
+                derrotas INTEGER DEFAULT 0,
+                diferencia INTEGER DEFAULT 0,
+                fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Tabla de partidos
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS partidos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                j1 TEXT NOT NULL,
+                j2 TEXT NOT NULL,
+                j3 TEXT NOT NULL,
+                j4 TEXT NOT NULL,
+                pareja1 TEXT NOT NULL,
+                pareja2 TEXT NOT NULL,
+                activo BOOLEAN DEFAULT 1,
+                puntos_pareja1 INTEGER,
+                puntos_pareja2 INTEGER,
+                ganadores TEXT,
+                resultado TEXT,
+                FOREIGN KEY (j1) REFERENCES jugadores(nombre) ON DELETE CASCADE,
+                FOREIGN KEY (j2) REFERENCES jugadores(nombre) ON DELETE CASCADE,
+                FOREIGN KEY (j3) REFERENCES jugadores(nombre) ON DELETE CASCADE,
+                FOREIGN KEY (j4) REFERENCES jugadores(nombre) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Tabla de historial
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS historial (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                partido_id INTEGER,
+                fecha TEXT,
+                pareja1 TEXT,
+                pareja2 TEXT,
+                resultado TEXT,
+                ganadores TEXT,
+                FOREIGN KEY (partido_id) REFERENCES partidos(id) ON DELETE CASCADE
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error inicializando la base de datos: {e}")
+        return False
+
+# Inicializar BD
+if not init_database():
+    st.error("No se pudo inicializar la base de datos")
+
+# ============================================
+# FUNCIONES DE BASE DE DATOS
+# ============================================
+
+def cargar_jugadores():
+    """Carga todos los jugadores de la BD"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, nombre, nivel, partidos, puntos_favor, puntos_contra, 
+                   victorias, derrotas, diferencia 
+            FROM jugadores 
+            ORDER BY puntos_favor DESC
+        ''')
+        jugadores = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jugadores
+    except Exception as e:
+        st.error(f"Error cargando jugadores: {e}")
+        return []
+
+def guardar_jugador(nombre, nivel):
+    """Guarda un nuevo jugador en la BD"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO jugadores (nombre, nivel, partidos, puntos_favor, puntos_contra, 
+                                  victorias, derrotas, diferencia)
+            VALUES (?, ?, 0, 0, 0, 0, 0, 0)
+        ''', (nombre, nivel))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    except Exception as e:
+        st.error(f"Error guardando jugador: {e}")
+        return False
+
+def eliminar_jugador(nombre):
+    """Elimina un jugador de la BD"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM jugadores WHERE nombre = ?", (nombre,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error eliminando jugador: {e}")
+        return False
+
+def crear_partido(j1, j2, j3, j4, pareja1, pareja2):
+    """Crea un nuevo partido en la BD"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO partidos (j1, j2, j3, j4, pareja1, pareja2, activo)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        ''', (j1, j2, j3, j4, pareja1, pareja2))
+        partido_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return partido_id
+    except Exception as e:
+        st.error(f"Error creando partido: {e}")
+        return None
+
+def cargar_partido(partido_id):
+    """Carga un partido específico por ID"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+                   puntos_pareja1, puntos_pareja2, ganadores, resultado
+            FROM partidos 
+            WHERE id = ?
+        ''', (partido_id,))
+        partido = cursor.fetchone()
+        conn.close()
+        return dict(partido) if partido else None
+    except Exception as e:
+        st.error(f"Error cargando partido: {e}")
+        return None
+
+def cargar_partidos_activos():
+    """Carga todos los partidos activos"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+                   puntos_pareja1, puntos_pareja2
+            FROM partidos 
+            WHERE activo = 1
+            ORDER BY fecha DESC
+        ''')
+        partidos = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return partidos
+    except Exception as e:
+        st.error(f"Error cargando partidos activos: {e}")
+        return []
+
+def cargar_todos_partidos(offset=0, limit=100, filtro=""):
+    """Carga todos los partidos con paginación y filtro opcional"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        query = '''
+            SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+                   puntos_pareja1, puntos_pareja2, ganadores, resultado
+            FROM partidos 
+        '''
+        
+        params = []
+        
+        if filtro:
+            query += ''' WHERE id LIKE ? OR pareja1 LIKE ? OR pareja2 LIKE ? OR 
+                        j1 LIKE ? OR j2 LIKE ? OR j3 LIKE ? OR j4 LIKE ?
+                     '''
+            filtro_param = f'%{filtro}%'
+            params = [filtro_param] * 7
+        
+        query += " ORDER BY fecha DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        partidos = [dict(row) for row in cursor.fetchall()]
+        
+        # Obtener total de partidos para paginación
+        cursor.execute("SELECT COUNT(*) as total FROM partidos")
+        total = cursor.fetchone()['total']
+        
+        conn.close()
+        return partidos, total
+    except Exception as e:
+        st.error(f"Error cargando todos los partidos: {e}")
+        return [], 0
+
+def actualizar_partido(partido_id, j1, j2, j3, j4, pareja1, pareja2):
+    """Actualiza un partido existente"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE partidos 
+            SET j1 = ?, j2 = ?, j3 = ?, j4 = ?, pareja1 = ?, pareja2 = ?
+            WHERE id = ?
+        ''', (j1, j2, j3, j4, pareja1, pareja2, partido_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error actualizando partido: {e}")
+        return False
+
+def eliminar_partido(partido_id):
+    """Elimina un partido y su historial (por CASCADE)"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM partidos WHERE id = ?", (partido_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error eliminando partido: {e}")
+        return False
+
+def eliminar_historial_completo():
+    """Elimina todo el historial de partidos"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM historial")
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error limpiando historial: {e}")
+        return False
+
+def actualizar_puntaje_tenis(partido_id, puntos_pareja1, puntos_pareja2):
+    """Actualiza los puntos en la BD"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE partidos 
+            SET puntos_pareja1 = ?, puntos_pareja2 = ?
+            WHERE id = ?
+        ''', (puntos_pareja1, puntos_pareja2, partido_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error actualizando puntaje: {e}")
+        return False
+
+def finalizar_partido(partido_id, puntos_pareja1, puntos_pareja2, ganadores):
+    """Finaliza un partido y actualiza estadísticas"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Obtener datos del partido
+        cursor.execute('SELECT * FROM partidos WHERE id = ?', (partido_id,))
+        partido = dict(cursor.fetchone())
+        
+        # Actualizar partido
+        resultado = f"{puntos_pareja1} - {puntos_pareja2}"
+        cursor.execute('''
+            UPDATE partidos 
+            SET activo = 0, puntos_pareja1 = ?, puntos_pareja2 = ?, 
+                ganadores = ?, resultado = ?
+            WHERE id = ?
+        ''', (puntos_pareja1, puntos_pareja2, ganadores, resultado, partido_id))
+        
+        # Guardar en historial
+        cursor.execute('''
+            INSERT INTO historial (partido_id, fecha, pareja1, pareja2, resultado, ganadores)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (partido_id, partido['fecha'], partido['pareja1'], partido['pareja2'], resultado, ganadores))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error finalizando partido: {e}")
+        return False
+
+def finalizar_partido_tenis(partido_id, puntos_pareja1, puntos_pareja2, ganadores, ganadores_lista, perdedores_lista):
+    """Finaliza el partido y actualiza estadísticas con sistema tenis"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Obtener datos del partido
+        cursor.execute('SELECT * FROM partidos WHERE id = ?', (partido_id,))
+        partido = dict(cursor.fetchone())
+        
+        # Actualizar partido
+        resultado = f"{puntos_pareja1} - {puntos_pareja2}"
+        cursor.execute('''
+            UPDATE partidos 
+            SET activo = 0, puntos_pareja1 = ?, puntos_pareja2 = ?, 
+                ganadores = ?, resultado = ?
+            WHERE id = ?
+        ''', (puntos_pareja1, puntos_pareja2, ganadores, resultado, partido_id))
+        
+        # Guardar en historial
+        cursor.execute('''
+            INSERT INTO historial (partido_id, fecha, pareja1, pareja2, resultado, ganadores)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (partido_id, partido['fecha'], partido['pareja1'], partido['pareja2'], resultado, ganadores))
+        
+        # Actualizar estadísticas de jugadores
+        for nombre in ganadores_lista:
+            actualizar_estadisticas_jugador(nombre, puntos_pareja1 if puntos_pareja1 > puntos_pareja2 else puntos_pareja2, 
+                                          puntos_pareja2 if puntos_pareja1 > puntos_pareja2 else puntos_pareja1, True)
+        
+        for nombre in perdedores_lista:
+            actualizar_estadisticas_jugador(nombre, puntos_pareja2 if puntos_pareja1 > puntos_pareja2 else puntos_pareja1,
+                                          puntos_pareja1 if puntos_pareja1 > puntos_pareja2 else puntos_pareja2, False)
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error finalizando partido tenis: {e}")
+        return False
+
+def actualizar_estadisticas_jugador(nombre, puntos_favor, puntos_contra, es_ganador):
+    """Actualiza estadísticas de un jugador"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if es_ganador:
+            cursor.execute('''
+                UPDATE jugadores 
+                SET partidos = partidos + 1,
+                    victorias = victorias + 1,
+                    puntos_favor = puntos_favor + ?,
+                    puntos_contra = puntos_contra + ?,
+                    diferencia = (puntos_favor + ?) - (puntos_contra + ?)
+                WHERE nombre = ?
+            ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
+        else:
+            cursor.execute('''
+                UPDATE jugadores 
+                SET partidos = partidos + 1,
+                    derrotas = derrotas + 1,
+                    puntos_favor = puntos_favor + ?,
+                    puntos_contra = puntos_contra + ?,
+                    diferencia = (puntos_favor + ?) - (puntos_contra + ?)
+                WHERE nombre = ?
+            ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error actualizando estadísticas: {e}")
+        return False
+
+def cargar_historial(offset=0, limit=30, filtro=""):
+    """Carga el historial de partidos con paginación"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        query = '''
+            SELECT fecha, pareja1, pareja2, resultado, ganadores
+            FROM historial 
+        '''
+        
+        params = []
+        
+        if filtro:
+            query += ''' WHERE pareja1 LIKE ? OR pareja2 LIKE ? OR ganadores LIKE ? 
+                        OR resultado LIKE ?
+                     '''
+            filtro_param = f'%{filtro}%'
+            params = [filtro_param] * 4
+        
+        query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        historial = [dict(row) for row in cursor.fetchall()]
+        
+        # Obtener total para paginación
+        cursor.execute("SELECT COUNT(*) as total FROM historial")
+        total = cursor.fetchone()['total']
+        
+        conn.close()
+        return historial, total
+    except Exception as e:
+        st.error(f"Error cargando historial: {e}")
+        return [], 0
+
+def obtener_estadisticas_globales():
+    """Obtiene estadísticas globales"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) as total FROM partidos WHERE activo = 0')
+        total_partidos = cursor.fetchone()['total']
+        
+        cursor.execute('SELECT SUM(puntos_favor) as total FROM jugadores')
+        total_puntos = cursor.fetchone()['total'] or 0
+        
+        cursor.execute('SELECT MAX(puntos_favor) as max FROM jugadores')
+        max_puntos = cursor.fetchone()['max'] or 0
+        
+        conn.close()
+        return total_partidos, total_puntos, max_puntos
+    except Exception as e:
+        st.error(f"Error obteniendo estadísticas: {e}")
+        return 0, 0, 0
 
 # ============================================
 # FUNCIONES PARA PUNTUACIÓN DE PÁDEL (15-30-40-JUEGO)
 # ============================================
 
 def convertir_puntos_tenis(puntos):
-    """
-    Convierte puntos numéricos a notación de tenis/pádel
-    0 -> 0
-    1 -> 15
-    2 -> 30
-    3 -> 40
-    4+ -> Juego
-    """
+    """Convierte puntos numéricos a notación de tenis/pádel"""
     if puntos == 0:
         return "0"
     elif puntos == 1:
@@ -35,9 +483,7 @@ def convertir_puntos_tenis(puntos):
         return "Juego"
 
 def calcular_estado_punto(puntos1, puntos2):
-    """
-    Calcula el estado actual del punto en notación de tenis
-    """
+    """Calcula el estado actual del punto en notación de tenis"""
     # Si alguien ya ganó
     if puntos1 >= 4 and puntos1 - puntos2 >= 2:
         return "game_won_1"
@@ -55,59 +501,62 @@ def calcular_estado_punto(puntos1, puntos2):
         elif puntos2 > puntos1:
             return "advantage_2"
     
-    # Punto normal
     return "normal"
 
-def actualizar_puntaje_tenis(partido_id, puntos_pareja1, puntos_pareja2):
-    """Actualiza los puntos en la BD"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE partidos 
-        SET puntos_pareja1 = ?, puntos_pareja2 = ?
-        WHERE id = ?
-    ''', (puntos_pareja1, puntos_pareja2, partido_id))
-    conn.commit()
-    conn.close()
+# ============================================
+# FUNCIONES DE PAGINACIÓN
+# ============================================
 
-def finalizar_partido_tenis(partido_id, puntos_pareja1, puntos_pareja2, ganadores, ganadores_lista, perdedores_lista):
-    """Finaliza el partido y actualiza estadísticas"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def paginador(total_items, items_por_pagina, key_prefix):
+    """Crea controles de paginación"""
+    total_paginas = (total_items - 1) // items_por_pagina + 1 if total_items > 0 else 1
     
-    # Obtener datos del partido
-    cursor.execute('SELECT * FROM partidos WHERE id = ?', (partido_id,))
-    partido = dict(cursor.fetchone())
+    if f'{key_prefix}_pagina' not in st.session_state:
+        st.session_state[f'{key_prefix}_pagina'] = 1
     
-    # Actualizar partido
-    resultado = f"{puntos_pareja1} - {puntos_pareja2}"
-    cursor.execute('''
-        UPDATE partidos 
-        SET activo = 0, puntos_pareja1 = ?, puntos_pareja2 = ?, 
-            ganadores = ?, resultado = ?
-        WHERE id = ?
-    ''', (puntos_pareja1, puntos_pareja2, ganadores, resultado, partido_id))
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
     
-    # Guardar en historial
-    cursor.execute('''
-        INSERT INTO historial (partido_id, fecha, pareja1, pareja2, resultado, ganadores)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (partido_id, partido['fecha'], partido['pareja1'], partido['pareja2'], resultado, ganadores))
+    with col1:
+        if st.button("⏮️ Primera", key=f"{key_prefix}_first"):
+            st.session_state[f'{key_prefix}_pagina'] = 1
+            st.rerun()
     
-    # Actualizar estadísticas de jugadores
-    for nombre in ganadores_lista:
-        actualizar_estadisticas_jugador(nombre, puntos_pareja1 if puntos_pareja1 > puntos_pareja2 else puntos_pareja2, 
-                                      puntos_pareja2 if puntos_pareja1 > puntos_pareja2 else puntos_pareja1, True)
+    with col2:
+        if st.button("◀️ Anterior", key=f"{key_prefix}_prev"):
+            if st.session_state[f'{key_prefix}_pagina'] > 1:
+                st.session_state[f'{key_prefix}_pagina'] -= 1
+                st.rerun()
     
-    for nombre in perdedores_lista:
-        actualizar_estadisticas_jugador(nombre, puntos_pareja2 if puntos_pareja1 > puntos_pareja2 else puntos_pareja1,
-                                      puntos_pareja1 if puntos_pareja1 > puntos_pareja2 else puntos_pareja2, False)
+    with col3:
+        st.write(f"Página {st.session_state[f'{key_prefix}_pagina']} de {total_paginas}")
     
-    conn.commit()
-    conn.close()
+    with col4:
+        if st.button("Siguiente ▶️", key=f"{key_prefix}_next"):
+            if st.session_state[f'{key_prefix}_pagina'] < total_paginas:
+                st.session_state[f'{key_prefix}_pagina'] += 1
+                st.rerun()
+    
+    with col5:
+        if st.button("⏭️ Última", key=f"{key_prefix}_last"):
+            st.session_state[f'{key_prefix}_pagina'] = total_paginas
+            st.rerun()
+    
+    if total_paginas > 1:
+        pagina = st.number_input(
+            "Ir a página", 
+            min_value=1, 
+            max_value=total_paginas, 
+            value=st.session_state[f'{key_prefix}_pagina'],
+            key=f"{key_prefix}_goto"
+        )
+        if pagina != st.session_state[f'{key_prefix}_pagina']:
+            st.session_state[f'{key_prefix}_pagina'] = pagina
+            st.rerun()
+    
+    return st.session_state[f'{key_prefix}_pagina']
 
 # ============================================
-# INTERFAZ DE USUARIO MODIFICADA
+# INTERFAZ DE USUARIO
 # ============================================
 
 # Título
@@ -133,20 +582,19 @@ with st.sidebar:
     st.markdown("---")
     st.caption("💾 Los datos se guardan automáticamente en la base de datos")
 
-# Pestañas (ahora con 7 tabs incluyendo la nueva de Puntuación)
+# Pestañas
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "👥 Jugadores", "🎯 Partidos", "🏆 Puntuación", "📊 Clasificación", 
     "📜 Historial", "✏️ Editar Partido", "🗑️ Borrar"
 ])
 
-# TAB 1: Lista de jugadores (sin cambios)
+# TAB 1: Lista de jugadores
 with tab1:
     jugadores = cargar_jugadores()
     
     if jugadores:
         st.subheader(f"Jugadores ({len(jugadores)})")
         
-        # Mostrar jugadores en formato tabla
         for j in jugadores:
             col1, col2, col3, col4, col5, col6 = st.columns([3, 2, 1, 1, 1, 1])
             with col1:
@@ -162,18 +610,17 @@ with tab1:
             with col6:
                 st.write(f"⚡ {j['puntos_favor']}-{j['puntos_contra']}")
         
-        # Eliminar jugador
         with st.expander("Eliminar jugador"):
             st.warning("⚠️ Al eliminar un jugador, también se borrarán todos sus partidos e historial")
             nombre = st.selectbox("Seleccionar", [j['nombre'] for j in jugadores])
             if st.button("Eliminar Jugador"):
-                eliminar_jugador(nombre)
-                st.success(f"✅ Jugador {nombre} eliminado")
-                st.rerun()
+                if eliminar_jugador(nombre):
+                    st.success(f"✅ Jugador {nombre} eliminado")
+                    st.rerun()
     else:
         st.info("No hay jugadores. Agrega desde el menú lateral.")
 
-# TAB 2: Crear partidos (sin cambios)
+# TAB 2: Crear partidos
 with tab2:
     col1, col2 = st.columns(2)
     jugadores = cargar_jugadores()
@@ -184,14 +631,12 @@ with tab2:
         if len(jugadores) >= 4:
             nombres = [j['nombre'] for j in jugadores]
             
-            # Selección rápida de los que menos jugaron
             if st.button("🎲 Seleccionar los que menos jugaron"):
                 menos_jugados = sorted(jugadores, key=lambda x: x['partidos'])
                 seleccionados = [j['nombre'] for j in menos_jugados[:4]]
                 st.session_state.seleccion_rapida = seleccionados
                 st.rerun()
             
-            # Selección por parejas
             st.write("**Formar parejas:**")
             
             col_p1, col_p2 = st.columns(2)
@@ -221,11 +666,12 @@ with tab2:
             if st.button("Crear Partido", type="primary"):
                 pareja1 = f"{jugador1_p1} y {jugador2_p1}"
                 pareja2 = f"{jugador1_p2} y {jugador2_p2}"
-                crear_partido(jugador1_p1, jugador2_p1, jugador1_p2, jugador2_p2, pareja1, pareja2)
-                if 'seleccion_rapida' in st.session_state:
-                    del st.session_state.seleccion_rapida
-                st.success("✅ Partido creado correctamente!")
-                st.rerun()
+                partido_id = crear_partido(jugador1_p1, jugador2_p1, jugador1_p2, jugador2_p2, pareja1, pareja2)
+                if partido_id:
+                    if 'seleccion_rapida' in st.session_state:
+                        del st.session_state.seleccion_rapida
+                    st.success("✅ Partido creado correctamente!")
+                    st.rerun()
         else:
             st.warning(f"Necesitas 4 jugadores (tienes {len(jugadores)}) ponte pilas!!!")
     
@@ -237,15 +683,14 @@ with tab2:
             for p in activos:
                 with st.container():
                     st.write(f"**Partido #{p['id']}**")
-                    st.write(f"🏸 {p['pareja1']}")
-                    st.write(f"🏸 {p['pareja2']}")
+                    st.write(f"🏸 {p['pareja1']} vs {p['pareja2']}")
                     if p['puntos_pareja1'] is not None:
                         st.write(f"📊 Puntaje actual: {p['puntos_pareja1']} - {p['puntos_pareja2']}")
                     st.divider()
         else:
             st.info("No hay partidos activos")
 
-# TAB 3: Puntuación con sistema 15-30-40-JUEGO (NUEVA)
+# TAB 3: Puntuación con sistema 15-30-40-JUEGO
 with tab3:
     st.header("🏆 Puntuación de Partidos - Sistema 15-30-40")
     st.markdown("---")
@@ -253,25 +698,16 @@ with tab3:
     partidos_activos = cargar_partidos_activos()
     
     if partidos_activos:
-        # Selector de partido con formato claro
         opciones_partido = []
         for p in partidos_activos:
             puntos1 = p['puntos_pareja1'] if p['puntos_pareja1'] is not None else 0
             puntos2 = p['puntos_pareja2'] if p['puntos_pareja2'] is not None else 0
-            
-            # Mostrar puntaje en formato tenis
             puntaje_tenis1 = convertir_puntos_tenis(puntos1)
             puntaje_tenis2 = convertir_puntos_tenis(puntos2)
-            
             opciones_partido.append(f"#{p['id']} - {p['pareja1']} vs {p['pareja2']} [{puntaje_tenis1}-{puntaje_tenis2}]")
         
-        partido_seleccionado = st.selectbox(
-            "Selecciona el partido", 
-            opciones_partido,
-            key="puntaje_partido"
-        )
+        partido_seleccionado = st.selectbox("Selecciona el partido", opciones_partido, key="puntaje_partido")
         
-        # Extraer ID
         match = re.search(r'#(\d+)', partido_seleccionado)
         if match:
             partido_id = int(match.group(1))
@@ -283,7 +719,6 @@ with tab3:
                 
                 st.markdown("---")
                 
-                # Mostrar parejas
                 col1, col2, col3 = st.columns([2, 1, 2])
                 
                 with col1:
@@ -305,14 +740,10 @@ with tab3:
                 
                 st.markdown("---")
                 
-                # Mostrar marcador en formato tenis
                 puntaje_tenis1 = convertir_puntos_tenis(puntos_actuales1)
                 puntaje_tenis2 = convertir_puntos_tenis(puntos_actuales2)
-                
-                # Determinar estado del punto
                 estado = calcular_estado_punto(puntos_actuales1, puntos_actuales2)
                 
-                # Mostrar marcador grande
                 st.markdown(f"""
                 <div style="text-align: center; margin: 30px 0;">
                     <div style="display: inline-block; background-color: #2c3e50; color: white; padding: 20px 40px; border-radius: 20px;">
@@ -323,7 +754,6 @@ with tab3:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Mostrar estado especial
                 if estado == "deuce":
                     st.info("🏐 ¡DEUCE! Se necesita ventaja de 2 puntos")
                 elif estado == "advantage_1":
@@ -339,15 +769,12 @@ with tab3:
                 
                 st.markdown("---")
                 
-                # Verificar si alguien ya ganó el juego
                 if estado in ["game_won_1", "game_won_2"]:
                     st.warning("⚠️ Este juego ya ha terminado. Debes finalizar el partido o crear uno nuevo.")
                     
-                    # Botón para finalizar el partido
                     col_f1, col_f2, col_f3 = st.columns(3)
                     with col_f2:
                         if st.button("✅ FINALIZAR PARTIDO", type="primary", use_container_width=True):
-                            # Determinar ganadores
                             if puntos_actuales1 > puntos_actuales2:
                                 ganadores = partido['pareja1']
                                 ganadores_lista = [partido['j1'], partido['j2']]
@@ -357,28 +784,24 @@ with tab3:
                                 ganadores_lista = [partido['j3'], partido['j4']]
                                 perdedores_lista = [partido['j1'], partido['j2']]
                             
-                            finalizar_partido_tenis(partido_id, puntos_actuales1, puntos_actuales2, 
-                                                   ganadores, ganadores_lista, perdedores_lista)
-                            st.success(f"✅ Partido finalizado! Ganó {ganadores}")
-                            st.rerun()
-                
+                            if finalizar_partido_tenis(partido_id, puntos_actuales1, puntos_actuales2, 
+                                                      ganadores, ganadores_lista, perdedores_lista):
+                                st.success(f"✅ Partido finalizado! Ganó {ganadores}")
+                                st.rerun()
                 else:
-                    # Botones para sumar puntos (en sistema tenis)
                     st.subheader("➕ Sumar punto")
                     
                     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
                     
                     with col_btn1:
                         if st.button(f"🏸 +1 PUNTO\n{partido['pareja1']}", use_container_width=True, type="primary"):
-                            nuevos_puntos = puntos_actuales1 + 1
-                            actualizar_puntaje_tenis(partido_id, nuevos_puntos, puntos_actuales2)
-                            st.rerun()
+                            if actualizar_puntaje_tenis(partido_id, puntos_actuales1 + 1, puntos_actuales2):
+                                st.rerun()
                     
                     with col_btn2:
                         if st.button(f"🏸 +1 PUNTO\n{partido['pareja2']}", use_container_width=True, type="primary"):
-                            nuevos_puntos = puntos_actuales2 + 1
-                            actualizar_puntaje_tenis(partido_id, puntos_actuales1, nuevos_puntos)
-                            st.rerun()
+                            if actualizar_puntaje_tenis(partido_id, puntos_actuales1, puntos_actuales2 + 1):
+                                st.rerun()
                     
                     with col_btn3:
                         if st.button("➖ RESTAR\n1 punto", use_container_width=True):
@@ -391,7 +814,6 @@ with tab3:
                         if st.button("🔄 REINICIAR\nmarcador", use_container_width=True):
                             st.session_state['mostrar_reiniciar_tenis'] = True
                     
-                    # Modal para restar puntos
                     if st.session_state.get('mostrar_restar_tenis', False):
                         st.markdown("---")
                         st.subheader("➖ Restar punto")
@@ -400,18 +822,18 @@ with tab3:
                         with col_r1:
                             if st.button(f"➖ Restar a\n{partido['pareja1']}", use_container_width=True):
                                 if puntos_actuales1 > 0:
-                                    actualizar_puntaje_tenis(partido_id, puntos_actuales1 - 1, puntos_actuales2)
-                                    st.session_state['mostrar_restar_tenis'] = False
-                                    st.rerun()
+                                    if actualizar_puntaje_tenis(partido_id, puntos_actuales1 - 1, puntos_actuales2):
+                                        st.session_state['mostrar_restar_tenis'] = False
+                                        st.rerun()
                                 else:
                                     st.error("No se puede restar más puntos")
                         
                         with col_r2:
                             if st.button(f"➖ Restar a\n{partido['pareja2']}", use_container_width=True):
                                 if puntos_actuales2 > 0:
-                                    actualizar_puntaje_tenis(partido_id, puntos_actuales1, puntos_actuales2 - 1)
-                                    st.session_state['mostrar_restar_tenis'] = False
-                                    st.rerun()
+                                    if actualizar_puntaje_tenis(partido_id, puntos_actuales1, puntos_actuales2 - 1):
+                                        st.session_state['mostrar_restar_tenis'] = False
+                                        st.rerun()
                                 else:
                                     st.error("No se puede restar más puntos")
                         
@@ -420,7 +842,6 @@ with tab3:
                                 st.session_state['mostrar_restar_tenis'] = False
                                 st.rerun()
                     
-                    # Modal para reiniciar
                     if st.session_state.get('mostrar_reiniciar_tenis', False):
                         st.markdown("---")
                         st.warning("⚠️ ¿Estás segura de que quieres reiniciar el marcador a 0-0?")
@@ -430,17 +851,14 @@ with tab3:
                             col_rr1, col_rr2 = st.columns(2)
                             with col_rr1:
                                 if st.button("✅ Sí, reiniciar", use_container_width=True):
-                                    actualizar_puntaje_tenis(partido_id, 0, 0)
-                                    st.session_state['mostrar_reiniciar_tenis'] = False
-                                    st.rerun()
+                                    if actualizar_puntaje_tenis(partido_id, 0, 0):
+                                        st.session_state['mostrar_reiniciar_tenis'] = False
+                                        st.rerun()
                             with col_rr2:
                                 if st.button("❌ No, cancelar", use_container_width=True):
                                     st.session_state['mostrar_reiniciar_tenis'] = False
                                     st.rerun()
                     
-                    st.markdown("---")
-                    
-                    # Explicación del sistema de puntuación
                     with st.expander("ℹ️ ¿Cómo funciona la puntuación?"):
                         st.markdown("""
                         **Sistema de puntuación del pádel/tenis:**
@@ -453,13 +871,11 @@ with tab3:
                         - **DEUCE**: Cuando ambos llegan a 40-40
                         - **VENTAJA**: Se necesita 1 punto después del Deuce para ganar
                         - **JUEGO**: Se gana con ventaja de 2 puntos
-                        
-                        💡 **Consejo**: Si llegas a 40-40 (Deuce), tendrás que ganar 2 puntos seguidos para llevarte el juego.
                         """)
     else:
         st.info("No hay partidos activos. Crea un partido primero en la pestaña 'Partidos'")
 
-# TAB 4: Clasificación (sin cambios)
+# TAB 4: Clasificación
 with tab4:
     jugadores = cargar_jugadores()
     
@@ -521,11 +937,11 @@ with tab4:
     else:
         st.info("No hay datos para mostrar")
 
-# TAB 5: Historial (sin cambios)
+# TAB 5: Historial
 with tab5:
     st.subheader("📜 Historial de Partidos")
     
-    filtro_historial = st.text_input("🔍 Buscar en historial (por pareja, resultado o ganadores)", key="filtro_historial")
+    filtro_historial = st.text_input("🔍 Buscar en historial", key="filtro_historial")
     items_por_pagina = 20
     
     offset = (st.session_state.get('historial_pagina', 1) - 1) * items_por_pagina
@@ -538,16 +954,12 @@ with tab5:
         with col_h2:
             with st.expander("⚠️ Limpiar todo el historial"):
                 st.warning("Esta acción eliminará TODO el historial de partidos")
-                st.warning("Los partidos seguirán existiendo, solo se borra el registro histórico")
-                confirmar_historial = st.checkbox("Entiendo que esto no se puede deshacer")
-                if confirmar_historial:
-                    if st.button("🗑️ LIMPIAR HISTORIAL COMPLETO", type="primary"):
-                        eliminar_historial_completo()
+                if st.button("🗑️ LIMPIAR HISTORIAL COMPLETO", type="primary"):
+                    if eliminar_historial_completo():
                         st.success("✅ Historial limpiado correctamente!")
                         st.rerun()
         
         st.markdown("---")
-        
         pagina_actual = paginador(total_historial, items_por_pagina, "historial")
         
         for partido in historial:
@@ -580,7 +992,7 @@ with tab5:
         else:
             st.info("No hay partidos finalizados aún")
 
-# TAB 6: Editar Partido (sin cambios significativos)
+# TAB 6: Editar Partido
 with tab6:
     st.subheader("✏️ Editar Partido")
     
@@ -599,12 +1011,6 @@ with tab6:
             
             jugadores = cargar_jugadores()
             nombres = [j['nombre'] for j in jugadores]
-            
-            jugadores_partido = [partido['j1'], partido['j2'], partido['j3'], partido['j4']]
-            jugadores_faltantes = [j for j in jugadores_partido if j not in nombres]
-            
-            if jugadores_faltantes:
-                st.warning(f"⚠️ Los siguientes jugadores ya no existen: {', '.join(jugadores_faltantes)}")
             
             col_edit1, col_edit2 = st.columns(2)
             
@@ -631,13 +1037,13 @@ with tab6:
             if st.button("💾 Guardar Cambios", type="primary"):
                 pareja1 = f"{jugador1_p1} y {jugador2_p1}"
                 pareja2 = f"{jugador1_p2} y {jugador2_p2}"
-                actualizar_partido(partido_id, jugador1_p1, jugador2_p1, jugador1_p2, jugador2_p2, pareja1, pareja2)
-                st.success("✅ Partido actualizado!")
-                st.rerun()
+                if actualizar_partido(partido_id, jugador1_p1, jugador2_p1, jugador1_p2, jugador2_p2, pareja1, pareja2):
+                    st.success("✅ Partido actualizado!")
+                    st.rerun()
     else:
         st.info("No hay partidos activos para editar")
 
-# TAB 7: Borrar (sin cambios)
+# TAB 7: Borrar
 with tab7:
     st.subheader("🗑️ Borrar Partido")
     
@@ -684,9 +1090,9 @@ with tab7:
                     confirmar = st.checkbox("Confirmar eliminación permanente")
                     if confirmar:
                         if st.button("🗑️ BORRAR PARTIDO", type="primary"):
-                            eliminar_partido(partido_id)
-                            st.success(f"✅ Partido #{partido_id} eliminado!")
-                            st.rerun()
+                            if eliminar_partido(partido_id):
+                                st.success(f"✅ Partido #{partido_id} eliminado!")
+                                st.rerun()
     else:
         if filtro_partido:
             st.info(f"No hay partidos que coincidan con '{filtro_partido}'")
