@@ -68,6 +68,7 @@ def init_database():
                 puntos_pareja2 INTEGER DEFAULT 0,
                 puntos_set1 INTEGER DEFAULT 0,
                 puntos_set2 INTEGER DEFAULT 0,
+                modo_muerte BOOLEAN DEFAULT 0,
                 ganadores TEXT,
                 resultado TEXT
             )
@@ -82,6 +83,9 @@ def init_database():
         
         if 'puntos_set2' not in columnas:
             cursor.execute("ALTER TABLE partidos ADD COLUMN puntos_set2 INTEGER DEFAULT 0")
+        
+        if 'modo_muerte' not in columnas:
+            cursor.execute("ALTER TABLE partidos ADD COLUMN modo_muerte BOOLEAN DEFAULT 0")
         
         # Tabla de historial
         cursor.execute('''
@@ -173,8 +177,8 @@ def crear_partido(j1, j2, j3, j4, pareja1, pareja2):
     try:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO partidos (j1, j2, j3, j4, pareja1, pareja2, activo, puntos_set1, puntos_set2)
-            VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0)
+            INSERT INTO partidos (j1, j2, j3, j4, pareja1, pareja2, activo, puntos_set1, puntos_set2, modo_muerte)
+            VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, 0)
         ''', (j1, j2, j3, j4, pareja1, pareja2))
         partido_id = cursor.lastrowid
         conn.commit()
@@ -193,7 +197,8 @@ def cargar_partido(partido_id):
         cursor = conn.cursor()
         cursor.execute('''
             SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
-                   puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2, ganadores, resultado
+                   puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2, 
+                   modo_muerte, ganadores, resultado
             FROM partidos 
             WHERE id = ?
         ''', (partido_id,))
@@ -215,7 +220,7 @@ def cargar_partidos_activos():
         cursor = conn.cursor()
         cursor.execute('''
             SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
-                   puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2
+                   puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2, modo_muerte
             FROM partidos 
             WHERE activo = 1
             ORDER BY fecha DESC
@@ -229,7 +234,6 @@ def cargar_partidos_activos():
         return []
 
 def cargar_todos_partidos():
-    """Carga todos los partidos (activos y finalizados)"""
     conn = get_db_connection()
     if conn is None:
         return []
@@ -250,19 +254,13 @@ def cargar_todos_partidos():
         return []
 
 def eliminar_partido(partido_id):
-    """Elimina un partido y su historial"""
     conn = get_db_connection()
     if conn is None:
         return False
     try:
         cursor = conn.cursor()
-        
-        # Primero eliminar el historial asociado
         cursor.execute("DELETE FROM historial WHERE partido_id = ?", (partido_id,))
-        
-        # Luego eliminar el partido
         cursor.execute("DELETE FROM partidos WHERE id = ?", (partido_id,))
-        
         conn.commit()
         conn.close()
         return True
@@ -287,6 +285,25 @@ def actualizar_puntos_set(partido_id, puntos_set1, puntos_set2):
         return True
     except Exception as e:
         st.error(f"Error actualizando puntos: {e}")
+        conn.close()
+        return False
+
+def actualizar_modo_muerte(partido_id, modo_muerte):
+    conn = get_db_connection()
+    if conn is None:
+        return False
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE partidos 
+            SET modo_muerte = ?
+            WHERE id = ?
+        ''', (modo_muerte, partido_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Error actualizando modo muerte: {e}")
         conn.close()
         return False
 
@@ -446,12 +463,21 @@ def convertir_puntos_tenis(puntos):
     else:
         return "Ventaja"
 
-def procesar_punto(puntos1, puntos2, ganador):
+def procesar_punto(puntos1, puntos2, ganador, modo_muerte=False):
+    """Procesa un punto según las reglas del pádel"""
     if ganador == 1:
         puntos1 += 1
     else:
         puntos2 += 1
     
+    # Si está en modo muerte súbita, el primer punto después de 40-40 gana
+    if modo_muerte and (puntos1 >= 3 or puntos2 >= 3):
+        if puntos1 > puntos2 and puntos1 >= 3:
+            return 0, 0, True, 1
+        elif puntos2 > puntos1 and puntos2 >= 3:
+            return 0, 0, True, 2
+    
+    # Si alguien llegó a 40 y tiene ventaja de 2, gana el juego
     if puntos1 >= 4 and puntos1 - puntos2 >= 2:
         return 0, 0, True, 1
     elif puntos2 >= 4 and puntos2 - puntos1 >= 2:
@@ -600,6 +626,7 @@ with tab3:
                 puntos_set2 = partido.get('puntos_set2', 0) or 0
                 puntos_partido1 = partido.get('puntos_pareja1', 0) or 0
                 puntos_partido2 = partido.get('puntos_pareja2', 0) or 0
+                modo_muerte = partido.get('modo_muerte', 0) or 0
                 
                 st.markdown("---")
                 
@@ -628,6 +655,33 @@ with tab3:
                 
                 st.markdown("---")
                 
+                # Mostrar modo actual si está en Deuce
+                if puntos_set1 == 3 and puntos_set2 == 3:
+                    if modo_muerte:
+                        st.info("💀 Modo MUERTE SÚBITA activado - ¡El próximo punto gana el juego!")
+                    else:
+                        st.info("🏐 DEUCE (40-40) - Elige modo de juego:")
+                        
+                        col_deuce1, col_deuce2 = st.columns(2)
+                        with col_deuce1:
+                            if st.button("🏸 SUBE - Jugar a ventaja (2 puntos)", use_container_width=True, type="primary"):
+                                # Modo normal con ventaja
+                                actualizar_modo_muerte(partido_id, 0)
+                                st.rerun()
+                        
+                        with col_deuce2:
+                            if st.button("💀 MUERE - Muerte súbita (1 punto)", use_container_width=True, type="primary"):
+                                # Modo muerte súbita
+                                actualizar_modo_muerte(partido_id, 1)
+                                st.rerun()
+                
+                # Mostrar estado de ventaja si está en modo sube
+                elif puntos_set1 > 3 or puntos_set2 > 3:
+                    if puntos_set1 > puntos_set2:
+                        st.success(f"🎾 VENTAJA para {partido['pareja1']} - ¡Necesita otro punto para ganar!")
+                    else:
+                        st.success(f"🎾 VENTAJA para {partido['pareja2']} - ¡Necesita otro punto para ganar!")
+                
                 modo_rapido = st.checkbox("⚡ Modo rápido (ingresar puntos directamente)")
                 
                 if modo_rapido:
@@ -647,94 +701,65 @@ with tab3:
                 else:
                     st.subheader("Puntuación del juego actual (15-30-40)")
                     
-                    if puntos_set1 >= 3 and puntos_set2 >= 3:
-                        if puntos_set1 == puntos_set2:
-                            st.warning("🏐 ¡DEUCE! ¿Sube o muere?")
-                            
-                            col_d1, col_d2, col_d3 = st.columns(3)
-                            with col_d1:
-                                if st.button(f"🏸 SUBE - {partido['pareja1']}", use_container_width=True):
-                                    actualizar_puntos_set(partido_id, puntos_set1 + 1, puntos_set2)
-                                    st.rerun()
-                            
-                            with col_d2:
-                                if st.button(f"🏸 SUBE - {partido['pareja2']}", use_container_width=True):
-                                    actualizar_puntos_set(partido_id, puntos_set1, puntos_set2 + 1)
-                                    st.rerun()
-                            
-                            with col_d3:
-                                if st.button("💀 MUERE (reiniciar a 0-0)", use_container_width=True):
-                                    actualizar_puntos_set(partido_id, 0, 0)
-                                    st.rerun()
-                        else:
-                            if puntos_set1 > puntos_set2:
-                                st.info(f"🎾 VENTAJA para {partido['pareja1']}")
-                            else:
-                                st.info(f"🎾 VENTAJA para {partido['pareja2']}")
-                            
-                            col_btn1, col_btn2 = st.columns(2)
-                            with col_btn1:
-                                if st.button(f"🏸 +1 - {partido['pareja1']}", use_container_width=True, type="primary"):
-                                    nuevos_set1, nuevos_set2, juego_ganado, ganador = procesar_punto(puntos_set1, puntos_set2, 1)
-                                    actualizar_puntos_set(partido_id, nuevos_set1, nuevos_set2)
-                                    if juego_ganado and ganador == 1:
-                                        actualizar_puntos_partido(partido_id, puntos_partido1 + 1, puntos_partido2)
-                                        st.success(f"🎉 ¡Juego ganado!")
-                                    st.rerun()
-                            
-                            with col_btn2:
-                                if st.button(f"🏸 +1 - {partido['pareja2']}", use_container_width=True, type="primary"):
-                                    nuevos_set1, nuevos_set2, juego_ganado, ganador = procesar_punto(puntos_set1, puntos_set2, 2)
-                                    actualizar_puntos_set(partido_id, nuevos_set1, nuevos_set2)
-                                    if juego_ganado and ganador == 2:
-                                        actualizar_puntos_partido(partido_id, puntos_partido1, puntos_partido2 + 1)
-                                        st.success(f"🎉 ¡Juego ganado!")
-                                    st.rerun()
+                    # Verificar si alguien ganó el juego
+                    juego_terminado = False
+                    ganador_juego = None
                     
-                    elif puntos_set1 >= 4 and puntos_set1 - puntos_set2 >= 2:
-                        st.success(f"🎉 ¡{partido['pareja1']} ganó el juego!")
-                        col_g1, col_g2 = st.columns(2)
-                        with col_g1:
-                            if st.button("✅ Sumar punto al marcador", use_container_width=True, type="primary"):
-                                actualizar_puntos_partido(partido_id, puntos_partido1 + 1, puntos_partido2)
-                                actualizar_puntos_set(partido_id, 0, 0)
-                                st.rerun()
-                        with col_g2:
-                            if st.button("🔄 Continuar sin sumar", use_container_width=True):
-                                actualizar_puntos_set(partido_id, 0, 0)
-                                st.rerun()
-                    
+                    if puntos_set1 >= 4 and puntos_set1 - puntos_set2 >= 2:
+                        juego_terminado = True
+                        ganador_juego = 1
                     elif puntos_set2 >= 4 and puntos_set2 - puntos_set1 >= 2:
-                        st.success(f"🎉 ¡{partido['pareja2']} ganó el juego!")
+                        juego_terminado = True
+                        ganador_juego = 2
+                    elif modo_muerte and (puntos_set1 == 4 or puntos_set2 == 4):
+                        juego_terminado = True
+                        ganador_juego = 1 if puntos_set1 > puntos_set2 else 2
+                    
+                    if juego_terminado:
+                        ganador_nombre = partido['pareja1'] if ganador_juego == 1 else partido['pareja2']
+                        st.success(f"🎉 ¡{ganador_nombre} ganó el juego!")
                         col_g1, col_g2 = st.columns(2)
                         with col_g1:
                             if st.button("✅ Sumar punto al marcador", use_container_width=True, type="primary"):
-                                actualizar_puntos_partido(partido_id, puntos_partido1, puntos_partido2 + 1)
+                                if ganador_juego == 1:
+                                    actualizar_puntos_partido(partido_id, puntos_partido1 + 1, puntos_partido2)
+                                else:
+                                    actualizar_puntos_partido(partido_id, puntos_partido1, puntos_partido2 + 1)
                                 actualizar_puntos_set(partido_id, 0, 0)
+                                actualizar_modo_muerte(partido_id, 0)
                                 st.rerun()
                         with col_g2:
                             if st.button("🔄 Continuar sin sumar", use_container_width=True):
                                 actualizar_puntos_set(partido_id, 0, 0)
+                                actualizar_modo_muerte(partido_id, 0)
                                 st.rerun()
-                    
                     else:
+                        # Botones para sumar puntos
                         col_btn1, col_btn2 = st.columns(2)
                         
                         with col_btn1:
                             if st.button(f"🏸 +1 PUNTO - {partido['pareja1']}", use_container_width=True, type="primary"):
-                                nuevos_set1, nuevos_set2, juego_ganado, ganador = procesar_punto(puntos_set1, puntos_set2, 1)
+                                nuevos_set1, nuevos_set2, juego_ganado, ganador = procesar_punto(
+                                    puntos_set1, puntos_set2, 1, modo_muerte
+                                )
                                 actualizar_puntos_set(partido_id, nuevos_set1, nuevos_set2)
                                 if juego_ganado and ganador == 1:
                                     actualizar_puntos_partido(partido_id, puntos_partido1 + 1, puntos_partido2)
+                                    actualizar_puntos_set(partido_id, 0, 0)
+                                    actualizar_modo_muerte(partido_id, 0)
                                     st.success(f"🎉 ¡Juego ganado!")
                                 st.rerun()
                         
                         with col_btn2:
                             if st.button(f"🏸 +1 PUNTO - {partido['pareja2']}", use_container_width=True, type="primary"):
-                                nuevos_set1, nuevos_set2, juego_ganado, ganador = procesar_punto(puntos_set1, puntos_set2, 2)
+                                nuevos_set1, nuevos_set2, juego_ganado, ganador = procesar_punto(
+                                    puntos_set1, puntos_set2, 2, modo_muerte
+                                )
                                 actualizar_puntos_set(partido_id, nuevos_set1, nuevos_set2)
                                 if juego_ganado and ganador == 2:
                                     actualizar_puntos_partido(partido_id, puntos_partido1, puntos_partido2 + 1)
+                                    actualizar_puntos_set(partido_id, 0, 0)
+                                    actualizar_modo_muerte(partido_id, 0)
                                     st.success(f"🎉 ¡Juego ganado!")
                                 st.rerun()
                 
@@ -854,17 +879,15 @@ with tab5:
     else:
         st.info("No hay partidos finalizados aún")
 
-# TAB 6: Borrar Partido (NUEVA)
+# TAB 6: Borrar Partido
 with tab6:
     st.header("🗑️ Borrar Partido")
     st.warning("⚠️ Esta acción eliminará permanentemente el partido y no se puede deshacer")
     st.markdown("---")
     
-    # Cargar todos los partidos
     todos_partidos = cargar_todos_partidos()
     
     if todos_partidos:
-        # Crear opciones para el selector
         opciones_partido = []
         for p in todos_partidos:
             estado = "🟢 Activo" if p['activo'] == 1 else "🔴 Finalizado"
@@ -872,7 +895,6 @@ with tab6:
             resultado = f" - {p['resultado']}" if p['resultado'] else ""
             opciones_partido.append(f"{estado} - #{p['id']} [{fecha}] - {p['pareja1']} vs {p['pareja2']}{resultado}")
         
-        # Selector de partido
         partido_seleccionado = st.selectbox(
             "Selecciona el partido que quieres eliminar",
             opciones_partido,
@@ -880,14 +902,12 @@ with tab6:
         )
         
         if partido_seleccionado:
-            # Extraer ID del partido
             match = re.search(r'#(\d+)', partido_seleccionado)
             if match:
                 partido_id = int(match.group(1))
                 partido = cargar_partido(partido_id)
                 
                 if partido:
-                    # Mostrar detalles del partido
                     st.markdown("---")
                     st.subheader("📋 Detalles del partido a eliminar:")
                     
@@ -905,11 +925,8 @@ with tab6:
                             st.write(f"**Ganadores:** {partido['ganadores']}")
                     
                     st.markdown("---")
-                    
-                    # Confirmación de eliminación
                     st.error("⚠️ ¡ATENCIÓN! Esta acción es irreversible")
                     
-                    # Checkbox de confirmación
                     confirmar_texto = st.text_input("Escribe 'ELIMINAR' para confirmar:", key="confirmar_eliminar")
                     
                     if confirmar_texto == "ELIMINAR":
@@ -920,8 +937,7 @@ with tab6:
                                 st.rerun()
                             else:
                                 st.error("❌ Error al eliminar el partido")
-                    else:
-                        if confirmar_texto:
-                            st.info("Escribe 'ELIMINAR' para habilitar el botón de eliminación")
+                    elif confirmar_texto:
+                        st.info("Escribe 'ELIMINAR' para habilitar el botón de eliminación")
     else:
         st.info("No hay partidos registrados para eliminar")
