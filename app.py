@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 import re
+import time
 
 # Configuración de la página
 st.set_page_config(
@@ -12,16 +13,20 @@ st.set_page_config(
 )
 
 # ============================================
-# CONEXIÓN A BASE DE DATOS
+# CONEXIÓN A BASE DE DATOS (MEJORADA)
 # ============================================
 
 DB_PATH = 'padel.db'
 
 def get_db_connection():
-    """Obtiene una conexión a la base de datos SQLite"""
+    """Obtiene una conexión a la base de datos SQLite con timeout"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        # timeout=10 segundos para esperar si la BD está bloqueada
+        conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
+        # Mejorar el rendimiento y reducir bloqueos
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
     except Exception as e:
         st.error(f"Error de conexión a BD: {e}")
@@ -105,350 +110,400 @@ def init_database():
         return True
     except Exception as e:
         st.error(f"Error inicializando BD: {e}")
+        if conn:
+            conn.close()
         return False
 
 init_database()
 
 # ============================================
-# FUNCIONES DE BASE DE DATOS
+# FUNCIONES DE BASE DE DATOS (CON RETRY Y CIERRE ADECUADO)
 # ============================================
+
+def ejecutar_con_retry(func, *args, max_retries=3, **kwargs):
+    """Ejecuta una función con reintentos en caso de bloqueo"""
+    for intento in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and intento < max_retries - 1:
+                time.sleep(0.5)  # Esperar medio segundo
+                continue
+            else:
+                raise e
+    return None
 
 def cargar_jugadores():
-    conn = get_db_connection()
-    if conn is None:
-        return []
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, nombre, nivel, partidos, puntos_favor, puntos_contra, 
-                   victorias, derrotas, diferencia 
-            FROM jugadores 
-            ORDER BY puntos_favor DESC
-        ''')
-        jugadores = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return jugadores
-    except Exception as e:
-        st.error(f"Error cargando jugadores: {e}")
-        conn.close()
-        return []
+    def _cargar():
+        conn = get_db_connection()
+        if conn is None:
+            return []
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, nombre, nivel, partidos, puntos_favor, puntos_contra, 
+                       victorias, derrotas, diferencia 
+                FROM jugadores 
+                ORDER BY puntos_favor DESC
+            ''')
+            jugadores = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return jugadores
+        except Exception as e:
+            st.error(f"Error cargando jugadores: {e}")
+            conn.close()
+            return []
+    
+    return ejecutar_con_retry(_cargar)
 
 def guardar_jugador(nombre, nivel):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO jugadores (nombre, nivel, partidos, puntos_favor, puntos_contra, 
-                                  victorias, derrotas, diferencia)
-            VALUES (?, ?, 0, 0, 0, 0, 0, 0)
-        ''', (nombre, nivel))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        conn.close()
-        return False
-    except Exception as e:
-        st.error(f"Error guardando jugador: {e}")
-        conn.close()
-        return False
+    def _guardar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO jugadores (nombre, nivel, partidos, puntos_favor, puntos_contra, 
+                                      victorias, derrotas, diferencia)
+                VALUES (?, ?, 0, 0, 0, 0, 0, 0)
+            ''', (nombre, nivel))
+            conn.commit()
+            conn.close()
+            return True
+        except sqlite3.IntegrityError:
+            conn.close()
+            return False
+        except Exception as e:
+            st.error(f"Error guardando jugador: {e}")
+            conn.close()
+            return False
+    
+    return ejecutar_con_retry(_guardar)
 
 def eliminar_jugador(nombre):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM jugadores WHERE nombre = ?", (nombre,))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error eliminando jugador: {e}")
-        conn.close()
-        return False
+    def _eliminar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM jugadores WHERE nombre = ?", (nombre,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error eliminando jugador: {e}")
+            conn.close()
+            return False
+    
+    return ejecutar_con_retry(_eliminar)
 
 def crear_partido(j1, j2, j3, j4, pareja1, pareja2):
-    conn = get_db_connection()
-    if conn is None:
-        return None
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO partidos (j1, j2, j3, j4, pareja1, pareja2, activo, puntos_set1, puntos_set2, modo_muerte)
-            VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, 0)
-        ''', (j1, j2, j3, j4, pareja1, pareja2))
-        partido_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return partido_id
-    except Exception as e:
-        st.error(f"Error creando partido: {e}")
-        conn.close()
-        return None
+    def _crear():
+        conn = get_db_connection()
+        if conn is None:
+            return None
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO partidos (j1, j2, j3, j4, pareja1, pareja2, activo, puntos_set1, puntos_set2, modo_muerte)
+                VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0, 0)
+            ''', (j1, j2, j3, j4, pareja1, pareja2))
+            partido_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return partido_id
+        except Exception as e:
+            st.error(f"Error creando partido: {e}")
+            conn.close()
+            return None
+    
+    return ejecutar_con_retry(_crear)
 
 def cargar_partido(partido_id):
-    conn = get_db_connection()
-    if conn is None:
-        return None
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
-                   puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2, 
-                   modo_muerte, ganadores, resultado
-            FROM partidos 
-            WHERE id = ?
-        ''', (partido_id,))
-        partido = cursor.fetchone()
-        conn.close()
-        if partido:
-            return dict(partido)
-        return None
-    except Exception as e:
-        st.error(f"Error cargando partido: {e}")
-        conn.close()
-        return None
+    def _cargar():
+        conn = get_db_connection()
+        if conn is None:
+            return None
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+                       puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2, 
+                       modo_muerte, ganadores, resultado
+                FROM partidos 
+                WHERE id = ?
+            ''', (partido_id,))
+            partido = cursor.fetchone()
+            conn.close()
+            if partido:
+                return dict(partido)
+            return None
+        except Exception as e:
+            st.error(f"Error cargando partido: {e}")
+            conn.close()
+            return None
+    
+    return ejecutar_con_retry(_cargar)
 
 def cargar_partidos_activos():
-    conn = get_db_connection()
-    if conn is None:
-        return []
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
-                   puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2, modo_muerte
-            FROM partidos 
-            WHERE activo = 1
-            ORDER BY fecha DESC
-        ''')
-        partidos = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return partidos
-    except Exception as e:
-        st.error(f"Error cargando partidos activos: {e}")
-        conn.close()
-        return []
+    def _cargar():
+        conn = get_db_connection()
+        if conn is None:
+            return []
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+                       puntos_pareja1, puntos_pareja2, puntos_set1, puntos_set2, modo_muerte
+                FROM partidos 
+                WHERE activo = 1
+                ORDER BY fecha DESC
+            ''')
+            partidos = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return partidos
+        except Exception as e:
+            st.error(f"Error cargando partidos activos: {e}")
+            conn.close()
+            return []
+    
+    return ejecutar_con_retry(_cargar)
 
 def cargar_todos_partidos():
-    conn = get_db_connection()
-    if conn is None:
-        return []
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
-                   puntos_pareja1, puntos_pareja2, resultado, ganadores
-            FROM partidos 
-            ORDER BY fecha DESC
-        ''')
-        partidos = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return partidos
-    except Exception as e:
-        st.error(f"Error cargando todos los partidos: {e}")
-        conn.close()
-        return []
+    def _cargar():
+        conn = get_db_connection()
+        if conn is None:
+            return []
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, fecha, j1, j2, j3, j4, pareja1, pareja2, activo,
+                       puntos_pareja1, puntos_pareja2, resultado, ganadores
+                FROM partidos 
+                ORDER BY fecha DESC
+            ''')
+            partidos = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return partidos
+        except Exception as e:
+            st.error(f"Error cargando todos los partidos: {e}")
+            conn.close()
+            return []
+    
+    return ejecutar_con_retry(_cargar)
 
 def eliminar_partido(partido_id):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM historial WHERE partido_id = ?", (partido_id,))
-        cursor.execute("DELETE FROM partidos WHERE id = ?", (partido_id,))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error eliminando partido: {e}")
-        conn.close()
-        return False
+    def _eliminar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM historial WHERE partido_id = ?", (partido_id,))
+            cursor.execute("DELETE FROM partidos WHERE id = ?", (partido_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error eliminando partido: {e}")
+            conn.close()
+            return False
+    
+    return ejecutar_con_retry(_eliminar)
 
 def actualizar_puntos_set(partido_id, puntos_set1, puntos_set2):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE partidos 
-            SET puntos_set1 = ?, puntos_set2 = ?
-            WHERE id = ?
-        ''', (puntos_set1, puntos_set2, partido_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error actualizando puntos: {e}")
-        conn.close()
-        return False
+    def _actualizar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE partidos 
+                SET puntos_set1 = ?, puntos_set2 = ?
+                WHERE id = ?
+            ''', (puntos_set1, puntos_set2, partido_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error actualizando puntos: {e}")
+            conn.close()
+            return False
+    
+    return ejecutar_con_retry(_actualizar)
 
 def actualizar_modo_muerte(partido_id, modo_muerte):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE partidos 
-            SET modo_muerte = ?
-            WHERE id = ?
-        ''', (modo_muerte, partido_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error actualizando modo muerte: {e}")
-        conn.close()
-        return False
+    def _actualizar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE partidos 
+                SET modo_muerte = ?
+                WHERE id = ?
+            ''', (modo_muerte, partido_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error actualizando modo muerte: {e}")
+            conn.close()
+            return False
+    
+    return ejecutar_con_retry(_actualizar)
 
 def actualizar_puntos_partido(partido_id, puntos_pareja1, puntos_pareja2):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE partidos 
-            SET puntos_pareja1 = ?, puntos_pareja2 = ?
-            WHERE id = ?
-        ''', (puntos_pareja1, puntos_pareja2, partido_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error actualizando puntos: {e}")
-        conn.close()
-        return False
+    def _actualizar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE partidos 
+                SET puntos_pareja1 = ?, puntos_pareja2 = ?
+                WHERE id = ?
+            ''', (puntos_pareja1, puntos_pareja2, partido_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error actualizando puntos: {e}")
+            conn.close()
+            return False
+    
+    return ejecutar_con_retry(_actualizar)
 
 def finalizar_partido(partido_id, puntos_pareja1, puntos_pareja2, ganadores):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM partidos WHERE id = ?', (partido_id,))
-        partido = dict(cursor.fetchone())
-        
-        resultado = f"{puntos_pareja1} - {puntos_pareja2}"
-        cursor.execute('''
-            UPDATE partidos 
-            SET activo = 0, puntos_pareja1 = ?, puntos_pareja2 = ?, 
-                ganadores = ?, resultado = ?
-            WHERE id = ?
-        ''', (puntos_pareja1, puntos_pareja2, ganadores, resultado, partido_id))
-        
-        cursor.execute('''
-            INSERT INTO historial (partido_id, fecha, pareja1, pareja2, resultado, ganadores)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (partido_id, partido['fecha'], partido['pareja1'], partido['pareja2'], resultado, ganadores))
-        
-        if puntos_pareja1 > puntos_pareja2:
-            ganadores_lista = [partido['j1'], partido['j2']]
-            perdedores_lista = [partido['j3'], partido['j4']]
-        else:
-            ganadores_lista = [partido['j3'], partido['j4']]
-            perdedores_lista = [partido['j1'], partido['j2']]
-        
-        for nombre in ganadores_lista:
-            actualizar_estadisticas_jugador(nombre, puntos_pareja1 if puntos_pareja1 > puntos_pareja2 else puntos_pareja2, 
-                                          puntos_pareja2 if puntos_pareja1 > puntos_pareja2 else puntos_pareja1, True)
-        
-        for nombre in perdedores_lista:
-            actualizar_estadisticas_jugador(nombre, puntos_pareja2 if puntos_pareja1 > puntos_pareja2 else puntos_pareja1,
-                                          puntos_pareja1 if puntos_pareja1 > puntos_pareja2 else puntos_pareja2, False)
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error finalizando partido: {e}")
-        conn.close()
-        return False
+    def _finalizar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            
+            # Obtener datos del partido
+            cursor.execute('SELECT * FROM partidos WHERE id = ?', (partido_id,))
+            partido = dict(cursor.fetchone())
+            
+            # Actualizar partido
+            resultado = f"{puntos_pareja1} - {puntos_pareja2}"
+            cursor.execute('''
+                UPDATE partidos 
+                SET activo = 0, puntos_pareja1 = ?, puntos_pareja2 = ?, 
+                    ganadores = ?, resultado = ?
+                WHERE id = ?
+            ''', (puntos_pareja1, puntos_pareja2, ganadores, resultado, partido_id))
+            
+            # Guardar en historial
+            cursor.execute('''
+                INSERT INTO historial (partido_id, fecha, pareja1, pareja2, resultado, ganadores)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (partido_id, partido['fecha'], partido['pareja1'], partido['pareja2'], resultado, ganadores))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error finalizando partido: {e}")
+            if conn:
+                conn.close()
+            return False
+    
+    return ejecutar_con_retry(_finalizar)
 
 def actualizar_estadisticas_jugador(nombre, puntos_favor, puntos_contra, es_ganador):
-    conn = get_db_connection()
-    if conn is None:
-        return False
-    try:
-        cursor = conn.cursor()
-        
-        if es_ganador:
-            cursor.execute('''
-                UPDATE jugadores 
-                SET partidos = partidos + 1,
-                    victorias = victorias + 1,
-                    puntos_favor = puntos_favor + ?,
-                    puntos_contra = puntos_contra + ?,
-                    diferencia = (puntos_favor + ?) - (puntos_contra + ?)
-                WHERE nombre = ?
-            ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
-        else:
-            cursor.execute('''
-                UPDATE jugadores 
-                SET partidos = partidos + 1,
-                    derrotas = derrotas + 1,
-                    puntos_favor = puntos_favor + ?,
-                    puntos_contra = puntos_contra + ?,
-                    diferencia = (puntos_favor + ?) - (puntos_contra + ?)
-                WHERE nombre = ?
-            ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Error actualizando estadísticas: {e}")
-        conn.close()
-        return False
+    def _actualizar():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            
+            if es_ganador:
+                cursor.execute('''
+                    UPDATE jugadores 
+                    SET partidos = partidos + 1,
+                        victorias = victorias + 1,
+                        puntos_favor = puntos_favor + ?,
+                        puntos_contra = puntos_contra + ?,
+                        diferencia = (puntos_favor + ?) - (puntos_contra + ?)
+                    WHERE nombre = ?
+                ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
+            else:
+                cursor.execute('''
+                    UPDATE jugadores 
+                    SET partidos = partidos + 1,
+                        derrotas = derrotas + 1,
+                        puntos_favor = puntos_favor + ?,
+                        puntos_contra = puntos_contra + ?,
+                        diferencia = (puntos_favor + ?) - (puntos_contra + ?)
+                    WHERE nombre = ?
+                ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error actualizando estadísticas de {nombre}: {e}")
+            if conn:
+                conn.close()
+            return False
+    
+    return ejecutar_con_retry(_actualizar)
 
 def cargar_historial(limite=50):
-    conn = get_db_connection()
-    if conn is None:
-        return []
-    try:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT fecha, pareja1, pareja2, resultado, ganadores
-            FROM historial 
-            ORDER BY id DESC 
-            LIMIT ?
-        ''', (limite,))
-        historial = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return historial
-    except Exception as e:
-        st.error(f"Error cargando historial: {e}")
-        conn.close()
-        return []
+    def _cargar():
+        conn = get_db_connection()
+        if conn is None:
+            return []
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT fecha, pareja1, pareja2, resultado, ganadores
+                FROM historial 
+                ORDER BY id DESC 
+                LIMIT ?
+            ''', (limite,))
+            historial = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            return historial
+        except Exception as e:
+            st.error(f"Error cargando historial: {e}")
+            conn.close()
+            return []
+    
+    return ejecutar_con_retry(_cargar)
 
 def obtener_estadisticas_globales():
-    conn = get_db_connection()
-    if conn is None:
-        return 0, 0, 0
-    try:
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) as total FROM partidos WHERE activo = 0')
-        total_partidos = cursor.fetchone()['total']
-        cursor.execute('SELECT SUM(puntos_favor) as total FROM jugadores')
-        total_puntos = cursor.fetchone()['total'] or 0
-        cursor.execute('SELECT MAX(puntos_favor) as max FROM jugadores')
-        max_puntos = cursor.fetchone()['max'] or 0
-        conn.close()
-        return total_partidos, total_puntos, max_puntos
-    except Exception as e:
-        st.error(f"Error obteniendo estadísticas: {e}")
-        conn.close()
-        return 0, 0, 0
+    def _obtener():
+        conn = get_db_connection()
+        if conn is None:
+            return 0, 0, 0
+        try:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as total FROM partidos WHERE activo = 0')
+            total_partidos = cursor.fetchone()['total']
+            cursor.execute('SELECT SUM(puntos_favor) as total FROM jugadores')
+            total_puntos = cursor.fetchone()['total'] or 0
+            cursor.execute('SELECT MAX(puntos_favor) as max FROM jugadores')
+            max_puntos = cursor.fetchone()['max'] or 0
+            conn.close()
+            return total_partidos, total_puntos, max_puntos
+        except Exception as e:
+            st.error(f"Error obteniendo estadísticas: {e}")
+            conn.close()
+            return 0, 0, 0
+    
+    return ejecutar_con_retry(_obtener)
 
 # ============================================
-# FUNCIONES PARA PUNTUACIÓN - CORREGIDAS
+# FUNCIONES PARA PUNTUACIÓN
 # ============================================
 
 def convertir_puntos_tenis(puntos):
@@ -464,7 +519,7 @@ def convertir_puntos_tenis(puntos):
         return "Ventaja"
 
 def procesar_punto(puntos1, puntos2, ganador, modo_muerte=False):
-    """Procesa un punto según las reglas del pádel - VERSIÓN CORREGIDA"""
+    """Procesa un punto según las reglas del pádel"""
     
     # Sumar el punto al ganador
     if ganador == 1:
@@ -480,7 +535,6 @@ def procesar_punto(puntos1, puntos2, ganador, modo_muerte=False):
             return 0, 0, True, 2
     
     # Verificar si alguien ganó el juego en modo normal (ventaja de 2)
-    # Caso: alguien tiene 4 o más y ventaja de 2
     if puntos1 >= 4 and puntos1 - puntos2 >= 2:
         return 0, 0, True, 1
     elif puntos2 >= 4 and puntos2 - puntos1 >= 2:
@@ -610,7 +664,7 @@ with tab2:
         else:
             st.info("No hay partidos activos")
 
-# TAB 3: Puntuación - CORREGIDA
+# TAB 3: Puntuación
 with tab3:
     st.header("🏆 Puntuación de Partidos")
     st.markdown("---")
@@ -665,30 +719,26 @@ with tab3:
                 
                 # Verificar si es necesario preguntar por SUBE o MUERE
                 if puntos_set1 == 3 and puntos_set2 == 3 and modo_muerte == 0:
-                    # Primera vez que llegan a 40-40, preguntar
                     st.warning("🏐 DEUCE (40-40) - Elige el modo de juego:")
                     
                     col_deuce1, col_deuce2 = st.columns(2)
                     with col_deuce1:
                         if st.button("🏸 SUBE - Jugar a ventaja (2 puntos)", use_container_width=True, type="primary"):
-                            # Modo normal con ventaja
                             actualizar_modo_muerte(partido_id, 0)
                             st.rerun()
                     
                     with col_deuce2:
                         if st.button("💀 MUERE - Muerte súbita (1 punto)", use_container_width=True, type="primary"):
-                            # Modo muerte súbita
                             actualizar_modo_muerte(partido_id, 1)
                             st.rerun()
                 
-                # Mostrar estado actual del juego
+                # Mostrar estado actual
                 elif puntos_set1 >= 4 or puntos_set2 >= 4:
                     if puntos_set1 > puntos_set2:
                         st.success(f"🎾 VENTAJA para {partido['pareja1']} - ¡Necesita otro punto para ganar!")
                     else:
                         st.success(f"🎾 VENTAJA para {partido['pareja2']} - ¡Necesita otro punto para ganar!")
                     
-                    # Mostrar modo actual
                     if modo_muerte:
                         st.info("💀 Modo MUERTE SÚBITA - El próximo punto gana el juego")
                     else:
@@ -720,9 +770,7 @@ with tab3:
                     juego_terminado = False
                     ganador_juego = None
                     
-                    # Verificar si alguien ganó
                     if modo_muerte:
-                        # En modo muerte súbita, el primero en llegar a 4 gana
                         if puntos_set1 == 4:
                             juego_terminado = True
                             ganador_juego = 1
@@ -730,7 +778,6 @@ with tab3:
                             juego_terminado = True
                             ganador_juego = 2
                     else:
-                        # En modo normal, se necesita ventaja de 2
                         if puntos_set1 >= 4 and puntos_set1 - puntos_set2 >= 2:
                             juego_terminado = True
                             ganador_juego = 1
@@ -757,7 +804,6 @@ with tab3:
                                 actualizar_modo_muerte(partido_id, 0)
                                 st.rerun()
                     else:
-                        # Botones para sumar puntos
                         col_btn1, col_btn2 = st.columns(2)
                         
                         with col_btn1:
@@ -796,6 +842,22 @@ with tab3:
                             if puntos_partido1 != puntos_partido2:
                                 ganador = partido['pareja1'] if puntos_partido1 > puntos_partido2 else partido['pareja2']
                                 if finalizar_partido(partido_id, puntos_partido1, puntos_partido2, ganador):
+                                    # Actualizar estadísticas después de finalizar
+                                    if puntos_partido1 > puntos_partido2:
+                                        ganadores_lista = [partido['j1'], partido['j2']]
+                                        perdedores_lista = [partido['j3'], partido['j4']]
+                                    else:
+                                        ganadores_lista = [partido['j3'], partido['j4']]
+                                        perdedores_lista = [partido['j1'], partido['j2']]
+                                    
+                                    for nombre in ganadores_lista:
+                                        actualizar_estadisticas_jugador(nombre, puntos_partido1 if puntos_partido1 > puntos_partido2 else puntos_partido2, 
+                                                                      puntos_partido2 if puntos_partido1 > puntos_partido2 else puntos_partido1, True)
+                                    
+                                    for nombre in perdedores_lista:
+                                        actualizar_estadisticas_jugador(nombre, puntos_partido2 if puntos_partido1 > puntos_partido2 else puntos_partido1,
+                                                                      puntos_partido1 if puntos_partido1 > puntos_partido2 else puntos_partido2, False)
+                                    
                                     st.success(f"✅ Partido finalizado! Ganó {ganador}")
                                     st.balloons()
                                     st.rerun()
