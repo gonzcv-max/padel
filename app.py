@@ -448,7 +448,7 @@ def obtener_estadisticas_globales():
         return 0, 0, 0
 
 # ============================================
-# FUNCIONES PARA PUNTUACIÓN
+# FUNCIONES PARA PUNTUACIÓN - CORREGIDAS
 # ============================================
 
 def convertir_puntos_tenis(puntos):
@@ -464,24 +464,32 @@ def convertir_puntos_tenis(puntos):
         return "Ventaja"
 
 def procesar_punto(puntos1, puntos2, ganador, modo_muerte=False):
-    """Procesa un punto según las reglas del pádel"""
+    """Procesa un punto según las reglas del pádel - VERSIÓN CORREGIDA"""
+    
+    # Sumar el punto al ganador
     if ganador == 1:
         puntos1 += 1
     else:
         puntos2 += 1
     
-    # Si está en modo muerte súbita, el primer punto después de 40-40 gana
+    # Verificar si alguien ganó el juego en modo muerte súbita
     if modo_muerte and (puntos1 >= 3 or puntos2 >= 3):
-        if puntos1 > puntos2 and puntos1 >= 3:
+        if puntos1 > puntos2:
             return 0, 0, True, 1
-        elif puntos2 > puntos1 and puntos2 >= 3:
+        elif puntos2 > puntos1:
             return 0, 0, True, 2
     
-    # Si alguien llegó a 40 y tiene ventaja de 2, gana el juego
+    # Verificar si alguien ganó el juego en modo normal (ventaja de 2)
+    # Caso: alguien tiene 4 o más y ventaja de 2
     if puntos1 >= 4 and puntos1 - puntos2 >= 2:
         return 0, 0, True, 1
     elif puntos2 >= 4 and puntos2 - puntos1 >= 2:
         return 0, 0, True, 2
+    
+    # Caso especial: Si están en ventaja pero se empata (ej: 5-5, 6-6)
+    # Volver a 40-40 (3-3)
+    if puntos1 >= 4 and puntos2 >= 4 and puntos1 == puntos2:
+        return 3, 3, False, 0
     
     return puntos1, puntos2, False, 0
 
@@ -602,7 +610,7 @@ with tab2:
         else:
             st.info("No hay partidos activos")
 
-# TAB 3: Puntuación
+# TAB 3: Puntuación - CORREGIDA
 with tab3:
     st.header("🏆 Puntuación de Partidos")
     st.markdown("---")
@@ -655,32 +663,39 @@ with tab3:
                 
                 st.markdown("---")
                 
-                # Mostrar modo actual si está en Deuce
-                if puntos_set1 == 3 and puntos_set2 == 3:
-                    if modo_muerte:
-                        st.info("💀 Modo MUERTE SÚBITA activado - ¡El próximo punto gana el juego!")
-                    else:
-                        st.info("🏐 DEUCE (40-40) - Elige modo de juego:")
-                        
-                        col_deuce1, col_deuce2 = st.columns(2)
-                        with col_deuce1:
-                            if st.button("🏸 SUBE - Jugar a ventaja (2 puntos)", use_container_width=True, type="primary"):
-                                # Modo normal con ventaja
-                                actualizar_modo_muerte(partido_id, 0)
-                                st.rerun()
-                        
-                        with col_deuce2:
-                            if st.button("💀 MUERE - Muerte súbita (1 punto)", use_container_width=True, type="primary"):
-                                # Modo muerte súbita
-                                actualizar_modo_muerte(partido_id, 1)
-                                st.rerun()
+                # Verificar si es necesario preguntar por SUBE o MUERE
+                if puntos_set1 == 3 and puntos_set2 == 3 and modo_muerte == 0:
+                    # Primera vez que llegan a 40-40, preguntar
+                    st.warning("🏐 DEUCE (40-40) - Elige el modo de juego:")
+                    
+                    col_deuce1, col_deuce2 = st.columns(2)
+                    with col_deuce1:
+                        if st.button("🏸 SUBE - Jugar a ventaja (2 puntos)", use_container_width=True, type="primary"):
+                            # Modo normal con ventaja
+                            actualizar_modo_muerte(partido_id, 0)
+                            st.rerun()
+                    
+                    with col_deuce2:
+                        if st.button("💀 MUERE - Muerte súbita (1 punto)", use_container_width=True, type="primary"):
+                            # Modo muerte súbita
+                            actualizar_modo_muerte(partido_id, 1)
+                            st.rerun()
                 
-                # Mostrar estado de ventaja si está en modo sube
-                elif puntos_set1 > 3 or puntos_set2 > 3:
+                # Mostrar estado actual del juego
+                elif puntos_set1 >= 4 or puntos_set2 >= 4:
                     if puntos_set1 > puntos_set2:
                         st.success(f"🎾 VENTAJA para {partido['pareja1']} - ¡Necesita otro punto para ganar!")
                     else:
                         st.success(f"🎾 VENTAJA para {partido['pareja2']} - ¡Necesita otro punto para ganar!")
+                    
+                    # Mostrar modo actual
+                    if modo_muerte:
+                        st.info("💀 Modo MUERTE SÚBITA - El próximo punto gana el juego")
+                    else:
+                        st.info("🏸 Modo VENTAJA - Se necesita ventaja de 2 puntos")
+                
+                elif puntos_set1 == 3 and puntos_set2 == 3 and modo_muerte == 1:
+                    st.info("💀 Modo MUERTE SÚBITA activado - ¡El próximo punto gana el juego!")
                 
                 modo_rapido = st.checkbox("⚡ Modo rápido (ingresar puntos directamente)")
                 
@@ -705,15 +720,23 @@ with tab3:
                     juego_terminado = False
                     ganador_juego = None
                     
-                    if puntos_set1 >= 4 and puntos_set1 - puntos_set2 >= 2:
-                        juego_terminado = True
-                        ganador_juego = 1
-                    elif puntos_set2 >= 4 and puntos_set2 - puntos_set1 >= 2:
-                        juego_terminado = True
-                        ganador_juego = 2
-                    elif modo_muerte and (puntos_set1 == 4 or puntos_set2 == 4):
-                        juego_terminado = True
-                        ganador_juego = 1 if puntos_set1 > puntos_set2 else 2
+                    # Verificar si alguien ganó
+                    if modo_muerte:
+                        # En modo muerte súbita, el primero en llegar a 4 gana
+                        if puntos_set1 == 4:
+                            juego_terminado = True
+                            ganador_juego = 1
+                        elif puntos_set2 == 4:
+                            juego_terminado = True
+                            ganador_juego = 2
+                    else:
+                        # En modo normal, se necesita ventaja de 2
+                        if puntos_set1 >= 4 and puntos_set1 - puntos_set2 >= 2:
+                            juego_terminado = True
+                            ganador_juego = 1
+                        elif puntos_set2 >= 4 and puntos_set2 - puntos_set1 >= 2:
+                            juego_terminado = True
+                            ganador_juego = 2
                     
                     if juego_terminado:
                         ganador_nombre = partido['pareja1'] if ganador_juego == 1 else partido['pareja2']
