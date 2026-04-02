@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 # ============================================
-# CONEXIÓN A BASE DE DATOS (MEJORADA)
+# CONEXIÓN A BASE DE DATOS
 # ============================================
 
 DB_PATH = 'padel.db'
@@ -21,10 +21,8 @@ DB_PATH = 'padel.db'
 def get_db_connection():
     """Obtiene una conexión a la base de datos SQLite con timeout"""
     try:
-        # timeout=10 segundos para esperar si la BD está bloqueada
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
-        # Mejorar el rendimiento y reducir bloqueos
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
@@ -117,7 +115,7 @@ def init_database():
 init_database()
 
 # ============================================
-# FUNCIONES DE BASE DE DATOS (CON RETRY Y CIERRE ADECUADO)
+# FUNCIONES DE BASE DE DATOS
 # ============================================
 
 def ejecutar_con_retry(func, *args, max_retries=3, **kwargs):
@@ -127,11 +125,88 @@ def ejecutar_con_retry(func, *args, max_retries=3, **kwargs):
             return func(*args, **kwargs)
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e) and intento < max_retries - 1:
-                time.sleep(0.5)  # Esperar medio segundo
+                time.sleep(0.5)
                 continue
             else:
                 raise e
     return None
+
+def recalcular_estadisticas():
+    """Recalcula todas las estadísticas de los jugadores desde cero"""
+    def _recalcular():
+        conn = get_db_connection()
+        if conn is None:
+            return False
+        try:
+            cursor = conn.cursor()
+            
+            # Primero, resetear todas las estadísticas de los jugadores
+            cursor.execute('''
+                UPDATE jugadores 
+                SET partidos = 0, puntos_favor = 0, puntos_contra = 0, 
+                    victorias = 0, derrotas = 0, diferencia = 0
+            ''')
+            
+            # Obtener todos los partidos finalizados (activo = 0)
+            cursor.execute('''
+                SELECT j1, j2, j3, j4, puntos_pareja1, puntos_pareja2, ganadores
+                FROM partidos 
+                WHERE activo = 0
+            ''')
+            
+            partidos = cursor.fetchall()
+            
+            # Para cada partido, actualizar estadísticas
+            for partido in partidos:
+                puntos1 = partido['puntos_pareja1'] or 0
+                puntos2 = partido['puntos_pareja2'] or 0
+                
+                # Determinar ganadores y perdedores
+                if puntos1 > puntos2:
+                    ganadores = [partido['j1'], partido['j2']]
+                    perdedores = [partido['j3'], partido['j4']]
+                    puntos_ganadores = puntos1
+                    puntos_perdedores = puntos2
+                else:
+                    ganadores = [partido['j3'], partido['j4']]
+                    perdedores = [partido['j1'], partido['j2']]
+                    puntos_ganadores = puntos2
+                    puntos_perdedores = puntos1
+                
+                # Actualizar estadísticas de ganadores
+                for nombre in ganadores:
+                    cursor.execute('''
+                        UPDATE jugadores 
+                        SET partidos = partidos + 1,
+                            victorias = victorias + 1,
+                            puntos_favor = puntos_favor + ?,
+                            puntos_contra = puntos_contra + ?,
+                            diferencia = (puntos_favor + ?) - (puntos_contra + ?)
+                        WHERE nombre = ?
+                    ''', (puntos_ganadores, puntos_perdedores, puntos_ganadores, puntos_perdedores, nombre))
+                
+                # Actualizar estadísticas de perdedores
+                for nombre in perdedores:
+                    cursor.execute('''
+                        UPDATE jugadores 
+                        SET partidos = partidos + 1,
+                            derrotas = derrotas + 1,
+                            puntos_favor = puntos_favor + ?,
+                            puntos_contra = puntos_contra + ?,
+                            diferencia = (puntos_favor + ?) - (puntos_contra + ?)
+                        WHERE nombre = ?
+                    ''', (puntos_perdedores, puntos_ganadores, puntos_perdedores, puntos_ganadores, nombre))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error recalculando estadísticas: {e}")
+            if conn:
+                conn.close()
+            return False
+    
+    return ejecutar_con_retry(_recalcular)
 
 def cargar_jugadores():
     def _cargar():
@@ -295,20 +370,31 @@ def cargar_todos_partidos():
     return ejecutar_con_retry(_cargar)
 
 def eliminar_partido(partido_id):
+    """Elimina un partido y luego recalcula todas las estadísticas"""
     def _eliminar():
         conn = get_db_connection()
         if conn is None:
             return False
         try:
             cursor = conn.cursor()
+            
+            # Primero eliminar el historial asociado
             cursor.execute("DELETE FROM historial WHERE partido_id = ?", (partido_id,))
+            
+            # Luego eliminar el partido
             cursor.execute("DELETE FROM partidos WHERE id = ?", (partido_id,))
+            
             conn.commit()
             conn.close()
+            
+            # Recalcular todas las estadísticas después de eliminar
+            recalcular_estadisticas()
+            
             return True
         except Exception as e:
             st.error(f"Error eliminando partido: {e}")
-            conn.close()
+            if conn:
+                conn.close()
             return False
     
     return ejecutar_con_retry(_eliminar)
@@ -408,6 +494,10 @@ def finalizar_partido(partido_id, puntos_pareja1, puntos_pareja2, ganadores):
             
             conn.commit()
             conn.close()
+            
+            # Recalcular todas las estadísticas después de finalizar
+            recalcular_estadisticas()
+            
             return True
         except Exception as e:
             st.error(f"Error finalizando partido: {e}")
@@ -416,46 +506,6 @@ def finalizar_partido(partido_id, puntos_pareja1, puntos_pareja2, ganadores):
             return False
     
     return ejecutar_con_retry(_finalizar)
-
-def actualizar_estadisticas_jugador(nombre, puntos_favor, puntos_contra, es_ganador):
-    def _actualizar():
-        conn = get_db_connection()
-        if conn is None:
-            return False
-        try:
-            cursor = conn.cursor()
-            
-            if es_ganador:
-                cursor.execute('''
-                    UPDATE jugadores 
-                    SET partidos = partidos + 1,
-                        victorias = victorias + 1,
-                        puntos_favor = puntos_favor + ?,
-                        puntos_contra = puntos_contra + ?,
-                        diferencia = (puntos_favor + ?) - (puntos_contra + ?)
-                    WHERE nombre = ?
-                ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
-            else:
-                cursor.execute('''
-                    UPDATE jugadores 
-                    SET partidos = partidos + 1,
-                        derrotas = derrotas + 1,
-                        puntos_favor = puntos_favor + ?,
-                        puntos_contra = puntos_contra + ?,
-                        diferencia = (puntos_favor + ?) - (puntos_contra + ?)
-                    WHERE nombre = ?
-                ''', (puntos_favor, puntos_contra, puntos_favor, puntos_contra, nombre))
-            
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            st.error(f"Error actualizando estadísticas de {nombre}: {e}")
-            if conn:
-                conn.close()
-            return False
-    
-    return ejecutar_con_retry(_actualizar)
 
 def cargar_historial(limite=50):
     def _cargar():
@@ -521,27 +571,22 @@ def convertir_puntos_tenis(puntos):
 def procesar_punto(puntos1, puntos2, ganador, modo_muerte=False):
     """Procesa un punto según las reglas del pádel"""
     
-    # Sumar el punto al ganador
     if ganador == 1:
         puntos1 += 1
     else:
         puntos2 += 1
     
-    # Verificar si alguien ganó el juego en modo muerte súbita
     if modo_muerte and (puntos1 >= 3 or puntos2 >= 3):
         if puntos1 > puntos2:
             return 0, 0, True, 1
         elif puntos2 > puntos1:
             return 0, 0, True, 2
     
-    # Verificar si alguien ganó el juego en modo normal (ventaja de 2)
     if puntos1 >= 4 and puntos1 - puntos2 >= 2:
         return 0, 0, True, 1
     elif puntos2 >= 4 and puntos2 - puntos1 >= 2:
         return 0, 0, True, 2
     
-    # Caso especial: Si están en ventaja pero se empata (ej: 5-5, 6-6)
-    # Volver a 40-40 (3-3)
     if puntos1 >= 4 and puntos2 >= 4 and puntos1 == puntos2:
         return 3, 3, False, 0
     
@@ -605,6 +650,7 @@ with tab1:
             nombre = st.selectbox("Seleccionar", [j['nombre'] for j in jugadores])
             if st.button("Eliminar Jugador"):
                 if eliminar_jugador(nombre):
+                    recalcular_estadisticas()  # Recalcular después de eliminar jugador
                     st.success(f"✅ Jugador {nombre} eliminado")
                     st.rerun()
     else:
@@ -717,7 +763,6 @@ with tab3:
                 
                 st.markdown("---")
                 
-                # Verificar si es necesario preguntar por SUBE o MUERE
                 if puntos_set1 == 3 and puntos_set2 == 3 and modo_muerte == 0:
                     st.warning("🏐 DEUCE (40-40) - Elige el modo de juego:")
                     
@@ -732,7 +777,6 @@ with tab3:
                             actualizar_modo_muerte(partido_id, 1)
                             st.rerun()
                 
-                # Mostrar estado actual
                 elif puntos_set1 >= 4 or puntos_set2 >= 4:
                     if puntos_set1 > puntos_set2:
                         st.success(f"🎾 VENTAJA para {partido['pareja1']} - ¡Necesita otro punto para ganar!")
@@ -766,7 +810,6 @@ with tab3:
                 else:
                     st.subheader("Puntuación del juego actual (15-30-40)")
                     
-                    # Verificar si alguien ganó el juego
                     juego_terminado = False
                     ganador_juego = None
                     
@@ -842,22 +885,6 @@ with tab3:
                             if puntos_partido1 != puntos_partido2:
                                 ganador = partido['pareja1'] if puntos_partido1 > puntos_partido2 else partido['pareja2']
                                 if finalizar_partido(partido_id, puntos_partido1, puntos_partido2, ganador):
-                                    # Actualizar estadísticas después de finalizar
-                                    if puntos_partido1 > puntos_partido2:
-                                        ganadores_lista = [partido['j1'], partido['j2']]
-                                        perdedores_lista = [partido['j3'], partido['j4']]
-                                    else:
-                                        ganadores_lista = [partido['j3'], partido['j4']]
-                                        perdedores_lista = [partido['j1'], partido['j2']]
-                                    
-                                    for nombre in ganadores_lista:
-                                        actualizar_estadisticas_jugador(nombre, puntos_partido1 if puntos_partido1 > puntos_partido2 else puntos_partido2, 
-                                                                      puntos_partido2 if puntos_partido1 > puntos_partido2 else puntos_partido1, True)
-                                    
-                                    for nombre in perdedores_lista:
-                                        actualizar_estadisticas_jugador(nombre, puntos_partido2 if puntos_partido1 > puntos_partido2 else puntos_partido1,
-                                                                      puntos_partido1 if puntos_partido1 > puntos_partido2 else puntos_partido2, False)
-                                    
                                     st.success(f"✅ Partido finalizado! Ganó {ganador}")
                                     st.balloons()
                                     st.rerun()
