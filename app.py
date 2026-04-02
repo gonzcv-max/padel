@@ -563,11 +563,11 @@ def obtener_estadisticas_globales():
     return ejecutar_con_retry(_obtener)
 
 # ============================================
-# FUNCIONES DE PAGINACIÓN
+# FUNCIONES DE PAGINACIÓN (CORREGIDA - SIN DUPLICADOS)
 # ============================================
 
-def paginador(total_items, items_por_pagina, key_prefix):
-    """Crea controles de paginación"""
+def mostrar_paginador(total_items, items_por_pagina, key_prefix):
+    """Muestra controles de paginación y devuelve la página actual"""
     total_paginas = (total_items - 1) // items_por_pagina + 1 if total_items > 0 else 1
     
     if f'{key_prefix}_pagina' not in st.session_state:
@@ -580,12 +580,12 @@ def paginador(total_items, items_por_pagina, key_prefix):
     col1, col2, col3, col4, col5 = st.columns([1, 1, 2, 1, 1])
     
     with col1:
-        if st.button("⏮️ Primera", key=f"{key_prefix}_first"):
+        if st.button("⏮️ Primera", key=f"{key_prefix}_first", use_container_width=True):
             st.session_state[f'{key_prefix}_pagina'] = 1
             st.rerun()
     
     with col2:
-        if st.button("◀️ Anterior", key=f"{key_prefix}_prev"):
+        if st.button("◀️ Anterior", key=f"{key_prefix}_prev", use_container_width=True):
             if st.session_state[f'{key_prefix}_pagina'] > 1:
                 st.session_state[f'{key_prefix}_pagina'] -= 1
                 st.rerun()
@@ -594,13 +594,13 @@ def paginador(total_items, items_por_pagina, key_prefix):
         st.write(f"Página {st.session_state[f'{key_prefix}_pagina']} de {total_paginas}")
     
     with col4:
-        if st.button("Siguiente ▶️", key=f"{key_prefix}_next"):
+        if st.button("Siguiente ▶️", key=f"{key_prefix}_next", use_container_width=True):
             if st.session_state[f'{key_prefix}_pagina'] < total_paginas:
                 st.session_state[f'{key_prefix}_pagina'] += 1
                 st.rerun()
     
     with col5:
-        if st.button("⏭️ Última", key=f"{key_prefix}_last"):
+        if st.button("⏭️ Última", key=f"{key_prefix}_last", use_container_width=True):
             st.session_state[f'{key_prefix}_pagina'] = total_paginas
             st.rerun()
     
@@ -764,15 +764,13 @@ with tab2:
     with col2:
         st.subheader("Partidos Activos")
         
-        # Paginación para partidos activos
         items_por_pagina = 10
-        pagina_actual = paginador(100, items_por_pagina, "activos")  # 100 es un placeholder, se actualizará
+        pagina_actual = mostrar_paginador(100, items_por_pagina, "activos")
         offset = (pagina_actual - 1) * items_por_pagina
         
         activos, total_activos = cargar_partidos_activos_paginado(offset, items_por_pagina)
         
         if activos:
-            # Actualizar paginador con el total real
             st.write(f"**Total partidos activos: {total_activos}**")
             
             for p in activos:
@@ -783,19 +781,18 @@ with tab2:
                         st.write(f"📊 Marcador: {p.get('puntos_pareja1', 0)} - {p.get('puntos_pareja2', 0)}")
                     st.divider()
             
-            # Mostrar paginación nuevamente con el total correcto
-            paginador(total_activos, items_por_pagina, "activos")
+            # Mostrar paginación nuevamente con el total real
+            mostrar_paginador(total_activos, items_por_pagina, "activos")
         else:
             st.info("No hay partidos activos")
 
-# TAB 3: Puntuación (CON PAGINACIÓN)
+# TAB 3: Puntuación
 with tab3:
     st.header("🏆 Puntuación de Partidos")
     st.markdown("---")
     
-    # Paginación para selector de partidos
     items_por_pagina = 15
-    pagina_actual = paginador(100, items_por_pagina, "puntuacion")
+    pagina_actual = mostrar_paginador(100, items_por_pagina, "puntuacion")
     offset = (pagina_actual - 1) * items_por_pagina
     
     partidos_activos, total_partidos = cargar_partidos_activos_paginado(offset, items_por_pagina)
@@ -803,7 +800,6 @@ with tab3:
     if partidos_activos:
         st.write(f"**Total partidos activos: {total_partidos}**")
         
-        # Selector de partido con los partidos de la página actual
         opciones_partido = []
         for p in partidos_activos:
             puntos_set1 = p.get('puntos_set1', 0) or 0
@@ -815,7 +811,7 @@ with tab3:
         partido_seleccionado = st.selectbox("Selecciona el partido", opciones_partido, key="puntaje_partido")
         
         # Mostrar paginación después del selector
-        paginador(total_partidos, items_por_pagina, "puntuacion")
+        mostrar_paginador(total_partidos, items_por_pagina, "puntuacion")
         
         match = re.search(r'#(\d+)', partido_seleccionado)
         if match:
@@ -1084,18 +1080,16 @@ with tab5:
     else:
         st.info("No hay partidos finalizados aún")
 
-# TAB 6: Borrar Partido (CON PAGINACIÓN)
+# TAB 6: Borrar Partido
 with tab6:
     st.header("🗑️ Borrar Partido")
     st.warning("⚠️ Esta acción eliminará permanentemente el partido y no se puede deshacer")
     st.markdown("---")
     
-    # Filtro de búsqueda
     filtro_partido = st.text_input("🔍 Buscar partido (por ID o pareja)", key="filtro_borrar")
     
-    # Paginación para partidos a eliminar
     items_por_pagina = 15
-    pagina_actual = paginador(100, items_por_pagina, "borrar")
+    pagina_actual = mostrar_paginador(100, items_por_pagina, "borrar")
     offset = (pagina_actual - 1) * items_por_pagina
     
     todos_partidos, total_partidos = cargar_todos_partidos_paginado(offset, items_por_pagina, filtro_partido)
@@ -1103,7 +1097,6 @@ with tab6:
     if todos_partidos:
         st.write(f"**Total partidos: {total_partidos}**")
         
-        # Crear opciones con la página actual
         opciones_partido = []
         for p in todos_partidos:
             estado = "🟢 Activo" if p['activo'] == 1 else "🔴 Finalizado"
@@ -1119,7 +1112,7 @@ with tab6:
             )
             
             # Mostrar paginación después del selector
-            paginador(total_partidos, items_por_pagina, "borrar")
+            mostrar_paginador(total_partidos, items_por_pagina, "borrar")
             
             if partido_seleccionado:
                 match = re.search(r'#(\d+)', partido_seleccionado)
@@ -1154,7 +1147,6 @@ with tab6:
                                 if eliminar_partido(partido_id):
                                     st.success(f"✅ Partido #{partido_id} eliminado correctamente!")
                                     st.balloons()
-                                    # Resetear a la primera página después de eliminar
                                     st.session_state['borrar_pagina'] = 1
                                     st.rerun()
                                 else:
